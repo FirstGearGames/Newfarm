@@ -1,0 +1,9 @@
+[*.cs]
+
+indent_style = space
+indent_size = 4
+end_of_line = crlf
+insert_final_newline = true
+csharp_style_var_elsewhere = false:error
+csharp_style_var_for_built_in_types = false:error
+csharp_style_var_when_type_is_apparent = false:error

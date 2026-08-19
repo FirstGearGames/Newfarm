@@ -1,0 +1,5 @@
+<Solution>
+    <Project Path="Newfarm/Newfarm.csproj" />
+    <Project Path="Newfarm.Host/Newfarm.Host.csproj" />
+    <Project Path="Newfarm.Tests/Newfarm.Tests.csproj" />
+</Solution>
