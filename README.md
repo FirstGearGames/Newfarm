@@ -66,6 +66,21 @@ dotnet run --project Newfarm.Host -- --port 47778
 
 **Newfarm will not amplify.** Every request is padded to at least the size of the largest possible reply, and anything shorter is dropped without an answer, so putting somebody else's address on a request buys an attacker nothing.
 
+## Scale
+
+Measured on one machine, `NEWFARM_SCALE=1 NEWFARM_SCALE_SESSIONS=<n> dotnet test`, with the concurrent-session cap lifted. Round trip is what a peer waits for an answer while the sweep walks every session held.
+
+| Sessions held | Memory | Round trip median | 99th | Worst |
+|---|---|---|---|---|
+| 10,000 | 2.7 MB | 0.10 ms | 0.16 ms | 0.54 ms |
+| 100,000 | 65 MB | 0.10 ms | 0.17 ms | 0.55 ms |
+| 250,000 | 160 MB | 0.10 ms | 0.83 ms | 1.24 ms |
+| 1,000,000 | 555 MB | 0.05 ms | 26.5 ms | 42.4 ms |
+
+Sessions were opened at roughly 45,000 a second throughout. A separate run held 20,000 sessions under 540,000 heartbeats over 30 seconds, at 17,500 a second, and lost none of them.
+
+The shape to take from this: the sweep is one pass over every session on the same thread that answers peers, so its cost lands in the tail rather than the median. Up to a few hundred thousand sessions it does not show at all. At a million it costs tens of milliseconds a sweep, which is still inside a 250 ms sweep interval but is plainly the beginning of the end. A deployment expecting that many wants either a longer `--sweep-interval-ms` or a second directory.
+
 ## Layout
 
 | Project | What it is |
