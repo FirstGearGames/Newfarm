@@ -314,7 +314,16 @@ internal sealed class NewfarmSessionRegistry
             if (session.IneffectiveHostChallengeCount < _config.MaximumIneffectiveHostChallenges)
                 return;
 
+            IPEndPoint stoodDownEndPoint = session.HostEndPoint;
+
             session.ClearHost(nowMilliseconds);
+
+            // It stays in the session as a waiter, so it is told where everyone went, and is passed over by the
+            // election, having just spent several rounds failing to show it could host.
+            session.AddWaiter(stoodDownEndPoint, nowMilliseconds);
+            session.RecordDeclined(stoodDownEndPoint);
+
+            notifications.Add(new NewfarmNotification(NewfarmPacketType.HostingRevoked, stoodDownEndPoint, session));
 
             return;
         }

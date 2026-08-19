@@ -513,7 +513,11 @@ public sealed class NewfarmDirectoryTests
 
         Assert.True(host.ChallengeCount > 0, "The host was never asked to prove it was hosting.");
         Assert.True(strandedClient.ElectionCount > 0, "The stranded client was never elected, so a heartbeating host stalled the session.");
-        Assert.Equal(NewfarmClientMode.Hosting, host.Client.Mode);
+
+        // The peer that lost the session is told so, rather than being left heartbeating at a directory that has
+        // stopped listening to it and never hearing where everyone went.
+        Assert.Equal(1, host.RevocationCount);
+        Assert.Equal(NewfarmClientMode.Waiting, host.Client.Mode);
     }
 
     /// <summary>

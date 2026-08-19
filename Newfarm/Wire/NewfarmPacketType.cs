@@ -115,6 +115,15 @@ public enum NewfarmPacketType : byte
     ProveHosting = 0xB9,
 
     /// <summary>
+    /// Newfarm tells a peer it is no longer the host, having stood it down for not answering its challenges.
+    /// </summary>
+    /// <remarks>
+    /// Without being told, a stood-down host would go on believing it holds a session that has moved out from under
+    /// it, heartbeating at a directory that stopped listening and never hearing where everyone went.
+    /// </remarks>
+    HostingRevoked = 0xBA,
+
+    /// <summary>
     /// Newfarm confirms it has taken a published credential, which is what stops the publisher repeating it.
     /// </summary>
     /// <remarks>

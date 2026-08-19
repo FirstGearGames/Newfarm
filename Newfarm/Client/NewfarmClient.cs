@@ -70,6 +70,18 @@ public sealed class NewfarmClient : IDisposable
     public delegate void NewfarmHostingChallengedHandler(uint epoch);
 
     /// <summary>
+    /// Raised when newfarm has taken the session off this peer, having asked it to prove it was hosting and heard
+    /// nothing back. The peer is a waiter again, and will be told where the session moved to.
+    /// </summary>
+    public event NewfarmHostingRevokedHandler? HostingRevoked;
+
+    /// <summary>
+    /// Receives notice that the session has been taken off this peer.
+    /// </summary>
+    /// <param name="epoch">The epoch in force when the session was taken.</param>
+    public delegate void NewfarmHostingRevokedHandler(uint epoch);
+
+    /// <summary>
     /// Raised when newfarm has handed over the credential the session now lives at.
     /// </summary>
     public event NewfarmCredentialAvailableHandler? CredentialAvailable;
@@ -407,6 +419,10 @@ public sealed class NewfarmClient : IDisposable
                 HandleProveHosting(datagram);
                 break;
 
+            case NewfarmPacketType.HostingRevoked:
+                HandleHostingRevoked(datagram);
+                break;
+
             case NewfarmPacketType.Waiting:
                 HandleWaiting(datagram);
                 break;
@@ -525,6 +541,30 @@ public sealed class NewfarmClient : IDisposable
             return;
 
         HostingChallenged?.Invoke(epoch);
+    }
+
+    /// <summary>
+    /// Steps down from hosting, because newfarm has taken the session off this peer.
+    /// </summary>
+    /// <param name="datagram">The bytes received.</param>
+    private void HandleHostingRevoked(ReadOnlySpan<byte> datagram)
+    {
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out Guid sessionId, out uint epoch))
+            return;
+
+        if (sessionId != Identity.SessionId || Mode is not NewfarmClientMode.Hosting)
+            return;
+
+        Identity = new NewfarmSessionIdentity(Identity.SessionId, Identity.SessionSecret, epoch);
+
+        // Waiting rather than idle, so this peer keeps its place in the session and is told where it moves to.
+        Mode = NewfarmClientMode.Waiting;
+
+        ClearUnconfirmedCredential();
+
+        _nextHeartbeatMilliseconds = 0;
+
+        HostingRevoked?.Invoke(epoch);
     }
 
     /// <summary>

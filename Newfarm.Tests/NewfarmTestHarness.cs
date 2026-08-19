@@ -243,6 +243,11 @@ internal sealed class NewfarmTestPeer : IDisposable
     public int ChallengeCount { get; private set; }
 
     /// <summary>
+    /// How many times the session has been taken off this peer.
+    /// </summary>
+    public int RevocationCount { get; private set; }
+
+    /// <summary>
     /// Set by a test to have the peer answer a challenge by republishing, standing in for a host whose room is
     /// genuinely still there.
     /// </summary>
@@ -266,6 +271,7 @@ internal sealed class NewfarmTestPeer : IDisposable
         Client.ElectionAborted += OnElectionAborted;
         Client.CredentialAvailable += OnCredentialAvailable;
         Client.HostingChallenged += OnHostingChallenged;
+        Client.HostingRevoked += OnHostingRevoked;
         Client.Refused += OnRefused;
     }
 
@@ -323,6 +329,15 @@ internal sealed class NewfarmTestPeer : IDisposable
             return;
 
         Client.PublishCredential(ChallengeAnswerAdapterTag, ChallengeAnswer);
+    }
+
+    /// <summary>
+    /// Records that the session was taken off this peer.
+    /// </summary>
+    /// <param name="epoch">The epoch in force when it was taken.</param>
+    private void OnHostingRevoked(uint epoch)
+    {
+        RevocationCount++;
     }
 
     /// <summary>
