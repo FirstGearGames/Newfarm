@@ -81,6 +81,15 @@ Sessions were opened at roughly 45,000 a second throughout. A separate run held 
 
 The shape to take from this: the sweep is one pass over every session on the same thread that answers peers, so its cost lands in the tail rather than the median. Up to a few hundred thousand sessions it does not show at all. At a million it costs tens of milliseconds a sweep, which is still inside a 250 ms sweep interval but is plainly the beginning of the end. A deployment expecting that many wants either a longer `--sweep-interval-ms` or a second directory.
 
+## Unity
+
+The library is built for `netstandard2.1` so a Unity project can drop the assembly in and use the client directly. What has been checked: the compiled assembly references exactly one thing, `netstandard 2.1`, and touches nothing outside the core BCL namespaces Unity's profile already provides. There is no runtime reflection anywhere in it, so IL2CPP has nothing to strip out from under it.
+
+What has **not** been done: it has never been dropped into a Unity project, built through IL2CPP, or run on a device. Two things to know before that happens:
+
+- `System.Net.Sockets` is not available on WebGL, so the client cannot run there as it stands.
+- The client and the directory ship in one assembly. A game that only ever uses the client still carries the server code, which is small but not nothing.
+
 ## Layout
 
 | Project | What it is |
