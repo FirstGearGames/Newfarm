@@ -94,19 +94,9 @@ public enum NewfarmPacketType : byte
     Waiting = 0xB4,
 
     /// <summary>
-    /// Newfarm has no session under the requested identity, either because it never existed or because it expired.
+    /// Newfarm refused a request, carrying a <see cref="NewfarmRefusalReason"/> saying why.
     /// </summary>
-    SessionNotFound = 0xB5,
-
-    /// <summary>
-    /// The session exists but the secret presented with the request did not match, so the request was refused.
-    /// </summary>
-    SecretRejected = 0xB6,
-
-    /// <summary>
-    /// Newfarm is already holding as many sessions as it is configured to allow.
-    /// </summary>
-    ServerAtCapacity = 0xB7,
+    Refused = 0xB5,
 
     /// <summary>
     /// Newfarm asks a host that peers cannot reach to publish a credential, which is the only proof of hosting it

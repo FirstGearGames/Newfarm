@@ -6,14 +6,9 @@ namespace Newfarm.Server;
 public enum NewfarmWaitOutcome : byte
 {
     /// <summary>
-    /// No session is held under the requested identity.
+    /// The session already has as many peers waiting on it as it is configured to allow.
     /// </summary>
-    SessionNotFound,
-
-    /// <summary>
-    /// The secret presented with the request did not match.
-    /// </summary>
-    SecretRejected,
+    SessionFull,
 
     /// <summary>
     /// The session already lives somewhere the peer can reach, so it is handed the credential rather than queued.

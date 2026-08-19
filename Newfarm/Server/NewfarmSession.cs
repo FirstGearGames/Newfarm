@@ -15,13 +15,7 @@ internal sealed class NewfarmSession
     /// <summary>
     /// The identity the host hands to its clients, and the key this session is stored under.
     /// </summary>
-    public Guid SessionId { get; }
-
-    /// <summary>
-    /// The secret a peer must present to be elected, to publish a credential, or to be told one. Without it a
-    /// leaked session id would be enough to take the session over.
-    /// </summary>
-    public Guid SessionSecret { get; }
+    public ulong SessionId { get; }
 
     /// <summary>
     /// Increments on every handover, so a peer can tell a newer credential from the one it holds and a returning old
@@ -135,10 +129,10 @@ internal sealed class NewfarmSession
     public string AdapterTag { get; private set; } = string.Empty;
 
     /// <summary>
-    /// The opaque bytes a peer needs to reach the room the session lives at, or <see langword="null"/> before any
-    /// host has published one. Newfarm never interprets these.
+    /// What a peer needs to reach the room the session lives at, or <see langword="null"/> before any host has
+    /// published one. Newfarm never interprets it.
     /// </summary>
-    public byte[]? Credential { get; private set; }
+    public string? Credential { get; private set; }
 
     /// <summary>
     /// When <see cref="Credential"/> was published, in <see cref="NewfarmClock.Milliseconds"/> milliseconds, which
@@ -175,13 +169,11 @@ internal sealed class NewfarmSession
     /// Creates a session with a fresh identity.
     /// </summary>
     /// <param name="sessionId">The identity the host will distribute.</param>
-    /// <param name="sessionSecret">The secret guarding the session.</param>
     /// <param name="hostEndPoint">The peer that asked for the session, which is assumed to be hosting it.</param>
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
-    public NewfarmSession(Guid sessionId, Guid sessionSecret, IPEndPoint hostEndPoint, long nowMilliseconds)
+    public NewfarmSession(ulong sessionId, IPEndPoint hostEndPoint, long nowMilliseconds)
     {
         SessionId = sessionId;
-        SessionSecret = sessionSecret;
         Epoch = 1;
         HostEndPoint = hostEndPoint;
         LastHostHeartbeatMilliseconds = nowMilliseconds;
@@ -452,7 +444,7 @@ internal sealed class NewfarmSession
     /// <param name="adapterTag">The service the credential belongs to.</param>
     /// <param name="credential">The opaque credential bytes.</param>
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
-    public void AcceptCredential(IPEndPoint publisherEndPoint, string adapterTag, byte[] credential, long nowMilliseconds)
+    public void AcceptCredential(IPEndPoint publisherEndPoint, string adapterTag, string credential, long nowMilliseconds)
     {
         AdapterTag = adapterTag;
         Credential = credential;

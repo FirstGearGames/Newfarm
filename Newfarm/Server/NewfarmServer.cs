@@ -45,6 +45,11 @@ public sealed class NewfarmServer : IDisposable
     private readonly NewfarmSessionRegistry _registry;
 
     /// <summary>
+    /// Decides which datagrams are worth acting on, so no one peer or machine can crowd the directory out.
+    /// </summary>
+    private readonly NewfarmRequestLimiter _limiter;
+
+    /// <summary>
     /// Reused across sweeps and requests to collect what should be sent, so a busy tick allocates nothing.
     /// </summary>
     private readonly List<NewfarmNotification> _notifications = [];
@@ -83,6 +88,7 @@ public sealed class NewfarmServer : IDisposable
         Config = config ?? throw new ArgumentNullException(nameof(config));
 
         _registry = new NewfarmSessionRegistry(Config);
+        _limiter = new NewfarmRequestLimiter(Config);
     }
 
     /// <summary>
@@ -206,6 +212,8 @@ public sealed class NewfarmServer : IDisposable
         _registry.Sweep(nowMilliseconds, _notifications);
 
         SendNotifications();
+
+        _limiter.Sweep(nowMilliseconds);
     }
 
     /// <summary>
@@ -215,10 +223,18 @@ public sealed class NewfarmServer : IDisposable
     /// <param name="senderEndPoint">The peer that sent them.</param>
     private void HandleDatagram(ReadOnlySpan<byte> datagram, IPEndPoint senderEndPoint)
     {
+        // Too short to have been padded, so either it was not sent by a newfarm client or it was sent by something
+        // hoping newfarm would answer at length to an address that never asked. Either way there is nothing to say.
+        if (datagram.Length < NewfarmWireFormat.MinimumRequestSize)
+            return;
+
         if (!NewfarmWireFormat.TryReadType(datagram, out NewfarmPacketType newfarmPacketType))
             return;
 
         long nowMilliseconds = NewfarmClock.Milliseconds;
+
+        if (!_limiter.TryAdmit(senderEndPoint, nowMilliseconds))
+            return;
 
         switch (newfarmPacketType)
         {
@@ -273,14 +289,14 @@ public sealed class NewfarmServer : IDisposable
     {
         if (!_registry.TryCreateSession(senderEndPoint, nowMilliseconds, out NewfarmSession? session))
         {
-            SendType(NewfarmPacketType.ServerAtCapacity, senderEndPoint);
+            SendRefused(sessionId: 0, NewfarmRefusalReason.ServerAtCapacity, senderEndPoint);
 
             return;
         }
 
-        Log($"Newfarm opened session [{session!.SessionId:N}] for host [{senderEndPoint}].");
+        Log($"Newfarm opened session [{session!.SessionId:x16}] for host [{senderEndPoint}].");
 
-        int length = NewfarmWireFormat.WriteAuthenticated(_sendBuffer, NewfarmPacketType.SessionCreated, session.SessionId, session.SessionSecret, session.Epoch);
+        int length = NewfarmWireFormat.WriteSessionEpoch(_sendBuffer, NewfarmPacketType.SessionCreated, session.SessionId, session.Epoch);
 
         Send(length, senderEndPoint);
     }
@@ -293,10 +309,10 @@ public sealed class NewfarmServer : IDisposable
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     private void HandleHostHeartbeat(ReadOnlySpan<byte> datagram, IPEndPoint senderEndPoint, long nowMilliseconds)
     {
-        if (!NewfarmWireFormat.TryReadAuthenticated(datagram, out Guid sessionId, out Guid sessionSecret, out uint _))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint _))
             return;
 
-        if (!TryResolveOrRefuse(sessionId, sessionSecret, senderEndPoint, out NewfarmSession? session))
+        if (!TryResolveOrRefuse(sessionId, senderEndPoint, out NewfarmSession? session))
             return;
 
         session!.TryRecordHostHeartbeat(senderEndPoint, nowMilliseconds);
@@ -310,13 +326,13 @@ public sealed class NewfarmServer : IDisposable
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     private void HandlePublishCredential(ReadOnlySpan<byte> datagram, IPEndPoint senderEndPoint, long nowMilliseconds)
     {
-        if (!NewfarmWireFormat.TryReadAuthenticated(datagram, out Guid sessionId, out Guid sessionSecret, out uint epoch))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
             return;
 
-        if (!NewfarmWireFormat.TryReadCredential(datagram, NewfarmWireFormat.AuthenticatedHeaderSize, out string adapterTag, out byte[] credential))
+        if (!NewfarmWireFormat.TryReadCredential(datagram, NewfarmWireFormat.SessionEpochHeaderSize, out string adapterTag, out string credential))
             return;
 
-        if (!TryResolveOrRefuse(sessionId, sessionSecret, senderEndPoint, out NewfarmSession? session))
+        if (!TryResolveOrRefuse(sessionId, senderEndPoint, out NewfarmSession? session))
             return;
 
         _notifications.Clear();
@@ -325,12 +341,12 @@ public sealed class NewfarmServer : IDisposable
 
         if (publishResult is not NewfarmRequestResult.Accepted)
         {
-            Log($"Newfarm refused a credential for session [{sessionId:N}] from [{senderEndPoint}]: [{publishResult}].");
+            Log($"Newfarm refused a credential for session [{sessionId:x16}] from [{senderEndPoint}]: [{publishResult}].");
 
             return;
         }
 
-        Log($"Newfarm accepted a credential for session [{sessionId:N}] epoch [{epoch}] from [{senderEndPoint}], fanning out to [{_notifications.Count}] waiters.");
+        Log($"Newfarm accepted a credential for session [{sessionId:x16}] epoch [{epoch}] from [{senderEndPoint}], fanning out to [{_notifications.Count}] waiters.");
 
         SendSessionEpoch(NewfarmPacketType.CredentialAccepted, session!, senderEndPoint);
 
@@ -345,10 +361,10 @@ public sealed class NewfarmServer : IDisposable
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     private void HandleDeclineElection(ReadOnlySpan<byte> datagram, IPEndPoint senderEndPoint, long nowMilliseconds)
     {
-        if (!NewfarmWireFormat.TryReadAuthenticated(datagram, out Guid sessionId, out Guid sessionSecret, out uint epoch))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
             return;
 
-        if (!TryResolveOrRefuse(sessionId, sessionSecret, senderEndPoint, out NewfarmSession? session))
+        if (!TryResolveOrRefuse(sessionId, senderEndPoint, out NewfarmSession? session))
             return;
 
         _notifications.Clear();
@@ -358,7 +374,7 @@ public sealed class NewfarmServer : IDisposable
         if (declineResult is not NewfarmRequestResult.Accepted)
             return;
 
-        Log($"Newfarm stood [{senderEndPoint}] down from hosting session [{sessionId:N}] at its own request.");
+        Log($"Newfarm stood [{senderEndPoint}] down from hosting session [{sessionId:x16}] at its own request.");
 
         SendNotifications();
     }
@@ -370,15 +386,15 @@ public sealed class NewfarmServer : IDisposable
     /// <param name="senderEndPoint">The peer that sent them.</param>
     private void HandleCloseSession(ReadOnlySpan<byte> datagram, IPEndPoint senderEndPoint)
     {
-        if (!NewfarmWireFormat.TryReadAuthenticated(datagram, out Guid sessionId, out Guid sessionSecret, out uint _))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint _))
             return;
 
-        if (!TryResolveOrRefuse(sessionId, sessionSecret, senderEndPoint, out NewfarmSession? session))
+        if (!TryResolveOrRefuse(sessionId, senderEndPoint, out NewfarmSession? session))
             return;
 
         _registry.RemoveSession(session!);
 
-        Log($"Newfarm closed session [{sessionId:N}] at the request of [{senderEndPoint}].");
+        Log($"Newfarm closed session [{sessionId:x16}] at the request of [{senderEndPoint}].");
     }
 
     /// <summary>
@@ -389,10 +405,10 @@ public sealed class NewfarmServer : IDisposable
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     private void HandleSurrenderHosting(ReadOnlySpan<byte> datagram, IPEndPoint senderEndPoint, long nowMilliseconds)
     {
-        if (!NewfarmWireFormat.TryReadAuthenticated(datagram, out Guid sessionId, out Guid sessionSecret, out uint epoch))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
             return;
 
-        if (!TryResolveOrRefuse(sessionId, sessionSecret, senderEndPoint, out NewfarmSession? session))
+        if (!TryResolveOrRefuse(sessionId, senderEndPoint, out NewfarmSession? session))
             return;
 
         _notifications.Clear();
@@ -402,7 +418,7 @@ public sealed class NewfarmServer : IDisposable
         if (surrenderResult is not NewfarmRequestResult.Accepted)
             return;
 
-        Log($"Newfarm took session [{sessionId:N}] back from [{senderEndPoint}], which gave up hosting it.");
+        Log($"Newfarm took session [{sessionId:x16}] back from [{senderEndPoint}], which gave up hosting it.");
 
         SendNotifications();
     }
@@ -415,16 +431,16 @@ public sealed class NewfarmServer : IDisposable
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     private void HandleCredentialUnreachable(ReadOnlySpan<byte> datagram, IPEndPoint senderEndPoint, long nowMilliseconds)
     {
-        if (!NewfarmWireFormat.TryReadAuthenticated(datagram, out Guid sessionId, out Guid sessionSecret, out uint epoch))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
             return;
 
-        if (!TryResolveOrRefuse(sessionId, sessionSecret, senderEndPoint, out NewfarmSession? session))
+        if (!TryResolveOrRefuse(sessionId, senderEndPoint, out NewfarmSession? session))
             return;
 
         if (_registry.ReportCredentialUnreachable(session!, senderEndPoint, epoch, nowMilliseconds) is not NewfarmRequestResult.Accepted)
             return;
 
-        Log($"Newfarm heard from [{senderEndPoint}] that session [{sessionId:N}] cannot be reached at the credential it holds.");
+        Log($"Newfarm heard from [{senderEndPoint}] that session [{sessionId:x16}] cannot be reached at the credential it holds.");
 
         session!.RecordWaiterKeepAlive(senderEndPoint, nowMilliseconds);
 
@@ -439,13 +455,20 @@ public sealed class NewfarmServer : IDisposable
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     private void HandleAwaitSession(ReadOnlySpan<byte> datagram, IPEndPoint senderEndPoint, long nowMilliseconds)
     {
-        if (!NewfarmWireFormat.TryReadAuthenticated(datagram, out Guid sessionId, out Guid sessionSecret, out uint _))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint _))
             return;
 
-        if (!TryResolveOrRefuse(sessionId, sessionSecret, senderEndPoint, out NewfarmSession? session))
+        if (!TryResolveOrRefuse(sessionId, senderEndPoint, out NewfarmSession? session))
             return;
 
         NewfarmWaitOutcome waitOutcome = _registry.AddWaiter(session!, senderEndPoint, nowMilliseconds);
+
+        if (waitOutcome is NewfarmWaitOutcome.SessionFull)
+        {
+            SendRefused(sessionId, NewfarmRefusalReason.SessionFull, senderEndPoint);
+
+            return;
+        }
 
         if (waitOutcome is NewfarmWaitOutcome.CredentialAvailable)
         {
@@ -467,10 +490,10 @@ public sealed class NewfarmServer : IDisposable
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     private void HandleWaiterHeartbeat(ReadOnlySpan<byte> datagram, IPEndPoint senderEndPoint, long nowMilliseconds)
     {
-        if (!NewfarmWireFormat.TryReadAuthenticated(datagram, out Guid sessionId, out Guid sessionSecret, out uint _))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint _))
             return;
 
-        if (!TryResolveOrRefuse(sessionId, sessionSecret, senderEndPoint, out NewfarmSession? session))
+        if (!TryResolveOrRefuse(sessionId, senderEndPoint, out NewfarmSession? session))
             return;
 
         if (session!.RecordWaiterHeartbeat(senderEndPoint, nowMilliseconds))
@@ -483,24 +506,30 @@ public sealed class NewfarmServer : IDisposable
     /// Resolves a session and replies with the reason when it cannot be resolved.
     /// </summary>
     /// <param name="sessionId">The session being addressed.</param>
-    /// <param name="sessionSecret">The secret the peer presented.</param>
     /// <param name="senderEndPoint">The peer to reply to on refusal.</param>
     /// <param name="session">When this returns <see langword="true"/>, the resolved session.</param>
-    /// <returns><see langword="true"/> when the session resolved and the secret matched.</returns>
-    private bool TryResolveOrRefuse(Guid sessionId, Guid sessionSecret, IPEndPoint senderEndPoint, out NewfarmSession? session)
+    /// <returns><see langword="true"/> when the session resolved.</returns>
+    private bool TryResolveOrRefuse(ulong sessionId, IPEndPoint senderEndPoint, out NewfarmSession? session)
     {
-        NewfarmRequestResult resolveResult = _registry.TryResolve(sessionId, sessionSecret, out session);
-
-        if (resolveResult is NewfarmRequestResult.Accepted)
+        if (_registry.TryResolve(sessionId, out session) is NewfarmRequestResult.Accepted)
             return true;
 
-        NewfarmPacketType refusal = resolveResult is NewfarmRequestResult.SecretRejected ? NewfarmPacketType.SecretRejected : NewfarmPacketType.SessionNotFound;
-
-        int length = NewfarmWireFormat.WriteSession(_sendBuffer, refusal, sessionId);
-
-        Send(length, senderEndPoint);
+        SendRefused(sessionId, NewfarmRefusalReason.SessionNotFound, senderEndPoint);
 
         return false;
+    }
+
+    /// <summary>
+    /// Tells a peer its request was refused, and why.
+    /// </summary>
+    /// <param name="sessionId">The session the request named.</param>
+    /// <param name="newfarmRefusalReason">Why the request was refused.</param>
+    /// <param name="endPoint">The peer to reply to.</param>
+    private void SendRefused(ulong sessionId, NewfarmRefusalReason newfarmRefusalReason, IPEndPoint endPoint)
+    {
+        int length = NewfarmWireFormat.WriteRefused(_sendBuffer, sessionId, newfarmRefusalReason);
+
+        Send(length, endPoint);
     }
 
     /// <summary>
@@ -551,18 +580,6 @@ public sealed class NewfarmServer : IDisposable
         int length = NewfarmWireFormat.WriteSessionEpoch(_sendBuffer, NewfarmPacketType.CredentialAvailable, session.SessionId, session.Epoch);
 
         length += NewfarmWireFormat.WriteCredential(new Span<byte>(_sendBuffer, length, _sendBuffer.Length - length), session.AdapterTag, session.Credential);
-
-        Send(length, endPoint);
-    }
-
-    /// <summary>
-    /// Sends a message that carries nothing but its type.
-    /// </summary>
-    /// <param name="newfarmPacketType">The message to send.</param>
-    /// <param name="endPoint">The peer to send to.</param>
-    private void SendType(NewfarmPacketType newfarmPacketType, IPEndPoint endPoint)
-    {
-        int length = NewfarmWireFormat.WriteType(_sendBuffer, newfarmPacketType);
 
         Send(length, endPoint);
     }

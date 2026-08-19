@@ -105,7 +105,64 @@ public sealed class NewfarmServerConfig
     /// The most sessions newfarm will hold at once.
     /// <see cref="UnlimitedConcurrentSessions"/> removes the cap.
     /// </summary>
-    public int MaximumConcurrentSessions = UnlimitedConcurrentSessions;
+    public int MaximumConcurrentSessions = 65536;
+
+    /// <summary>
+    /// The most peers that may be waiting on one session.
+    /// </summary>
+    /// <remarks>
+    /// A session is one game's worth of players, so this sits far above any real lobby and is only ever met by
+    /// somebody joining a session over and over to be sure of winning the election.
+    /// </remarks>
+    public int MaximumWaitersPerSession = 1024;
+
+    /// <summary>
+    /// How many requests a second one peer may send before the rest are dropped.
+    /// </summary>
+    /// <remarks>
+    /// A peer at its busiest sends a heartbeat a second, a retry or two while a request goes unanswered, and the
+    /// occasional report. This is an order of magnitude above that, so a real peer never comes near it however badly
+    /// its network is behaving.
+    /// </remarks>
+    public uint MaximumRequestsPerSecondPerPeer = 32;
+
+    /// <summary>
+    /// How much of a peer's allowance may be spent at once, for the peer that wakes up and sends its request, its
+    /// heartbeat and its report in the same breath.
+    /// </summary>
+    public uint RequestBurstPerPeer = 64;
+
+    /// <summary>
+    /// How many requests a second one machine may send before the rest are dropped.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately loose, because an address is not a peer. A school, an office or a carrier-grade NAT puts hundreds
+    /// of unrelated players behind a single address, and a limit sized for one player would lock out everyone in the
+    /// building. At the rate a peer actually sends, this leaves room for several hundred of them sharing one address.
+    /// An operator serving somewhere with more players than that behind one address should raise it.
+    /// </remarks>
+    public uint MaximumRequestsPerSecondPerAddress = 2048;
+
+    /// <summary>
+    /// How much of an address's allowance may be spent at once, which is what a building's worth of players
+    /// reconnecting together looks like.
+    /// </summary>
+    public uint RequestBurstPerAddress = 4096;
+
+    /// <summary>
+    /// The most peers the limiter will track separately. Past this, peers are judged on their address alone.
+    /// </summary>
+    public int MaximumTrackedPeers = 65536;
+
+    /// <summary>
+    /// The most machines the limiter will track separately.
+    /// </summary>
+    public int MaximumTrackedAddresses = 16384;
+
+    /// <summary>
+    /// How long a sender has to be quiet before the limiter forgets it, which is what keeps its tables bounded.
+    /// </summary>
+    public uint LimiterIdleForgetMilliseconds = 30000;
 
     /// <summary>
     /// The port newfarm binds when <see cref="Port"/> is left alone.

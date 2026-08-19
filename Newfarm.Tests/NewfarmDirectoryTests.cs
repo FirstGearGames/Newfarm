@@ -1,6 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
-using System.Text;
+using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
 using Newfarm.Client;
 using Newfarm.Wire;
 
@@ -18,7 +22,8 @@ public sealed class NewfarmDirectoryTests
     private const string AdapterTag = "blitzrelay";
 
     /// <summary>
-    /// A host obtains a session, and the identity it is given is usable as the two text values it hands to clients.
+    /// A host obtains a session, and the identity it is given survives the round trip through the text it hands to
+    /// its clients.
     /// </summary>
     [Fact]
     public void HostObtainsASessionItCanDistribute()
@@ -33,17 +38,42 @@ public sealed class NewfarmDirectoryTests
 
         NewfarmSessionIdentity identity = host.CreatedIdentity!.Value;
 
-        Assert.NotEqual(Guid.Empty, identity.SessionId);
-        Assert.NotEqual(Guid.Empty, identity.SessionSecret);
-        Assert.NotEqual(identity.SessionId, identity.SessionSecret);
+        Assert.NotEqual(0ul, identity.SessionId);
         Assert.Equal(1u, identity.Epoch);
         Assert.Equal(1, harness.Server.SessionCount);
 
-        identity.ToText(out string sessionIdText, out string sessionSecretText);
+        string sessionIdText = identity.ToText();
 
-        Assert.True(NewfarmSessionIdentity.TryParse(sessionIdText, sessionSecretText, out NewfarmSessionIdentity parsed));
+        Assert.True(NewfarmSessionIdentity.TryParse(sessionIdText, out NewfarmSessionIdentity parsed));
         Assert.Equal(identity.SessionId, parsed.SessionId);
-        Assert.Equal(identity.SessionSecret, parsed.SessionSecret);
+    }
+
+    /// <summary>
+    /// Session ids are drawn from a cryptographic source, so two sessions never share one and a run of them shows no
+    /// pattern a third party could follow.
+    /// </summary>
+    [Fact]
+    public void SessionIdsAreUnpredictableAndDistinct()
+    {
+        using NewfarmTestHarness harness = new();
+
+        HashSet<ulong> sessionIds = [];
+
+        for (int i = 0; i < 16; i++)
+        {
+            NewfarmTestPeer host = harness.CreatePeer();
+
+            host.Client.CreateSession();
+
+            harness.PumpUntil(() => host.CreatedIdentity is not null, NewfarmTestHarness.WaitTimeout, "a session to be created");
+
+            ulong sessionId = host.CreatedIdentity!.Value.SessionId;
+
+            Assert.True(sessionIds.Add(sessionId), "The same session id was handed out twice.");
+
+            // A counter, a timestamp, or anything else ordered would sit inside a narrow band. These do not.
+            Assert.NotEqual(0ul, sessionId >> 32);
+        }
     }
 
     /// <summary>
@@ -73,7 +103,7 @@ public sealed class NewfarmDirectoryTests
 
         NewfarmTestPeer electedPeer = ElectedPeer(firstClient, secondClient, thirdClient);
 
-        byte[] credential = Encoding.UTF8.GetBytes("ROOM-0002");
+        string credential = "ROOM-0002";
 
         electedPeer.Client.PublishCredential(AdapterTag, credential);
 
@@ -105,7 +135,7 @@ public sealed class NewfarmDirectoryTests
 
         harness.PumpUntil(() => firstClient.ElectionCount > 0, NewfarmTestHarness.WaitTimeout, "the only client to be elected");
 
-        byte[] credential = Encoding.UTF8.GetBytes("ROOM-LATE");
+        string credential = "ROOM-LATE";
 
         firstClient.Client.PublishCredential(AdapterTag, credential);
 
@@ -147,7 +177,7 @@ public sealed class NewfarmDirectoryTests
         harness.PumpUntil(() => firstClient.AbortCount > 0, NewfarmTestHarness.WaitTimeout, "the first client's election to be withdrawn");
         harness.PumpUntil(() => secondClient.ElectionCount > 0, NewfarmTestHarness.WaitTimeout, "the second client to be elected in its place");
 
-        byte[] credential = Encoding.UTF8.GetBytes("ROOM-SECOND");
+        string credential = "ROOM-SECOND";
 
         secondClient.Client.PublishCredential(AdapterTag, credential);
 
@@ -188,11 +218,12 @@ public sealed class NewfarmDirectoryTests
     }
 
     /// <summary>
-    /// The secret is what stands between a leaked session id and a stolen session, so a peer presenting the wrong one
-    /// is refused rather than queued or elected.
+    /// A peer guessing at a session id gets nothing: not a queue place, not an election, not a credential. The id is
+    /// the whole of a session's security, so the answer to one nobody was given has to be the same answer an expired
+    /// session gives.
     /// </summary>
     [Fact]
-    public void AWrongSecretIsRefused()
+    public void AGuessedSessionIdIsRefused()
     {
         using NewfarmTestHarness harness = new();
 
@@ -202,11 +233,12 @@ public sealed class NewfarmDirectoryTests
 
         AbandonHost(harness, host);
 
-        impostor.Client.AwaitSession(new NewfarmSessionIdentity(identity.SessionId, Guid.NewGuid(), epoch: 0));
+        // One bit away from a real session, which is as close as guessing gets anyone.
+        impostor.Client.AwaitSession(new NewfarmSessionIdentity(identity.SessionId ^ 1ul, epoch: 0));
 
         harness.PumpUntil(() => impostor.Refusals.Count > 0, NewfarmTestHarness.WaitTimeout, "the impostor to be refused");
 
-        Assert.Contains(NewfarmPacketType.SecretRejected, impostor.Refusals);
+        Assert.Contains(NewfarmRefusalReason.SessionNotFound, impostor.Refusals);
         Assert.Equal(0, impostor.ElectionCount);
         Assert.Null(impostor.ReceivedCredential);
     }
@@ -221,11 +253,11 @@ public sealed class NewfarmDirectoryTests
 
         NewfarmTestPeer peer = harness.CreatePeer();
 
-        peer.Client.AwaitSession(new NewfarmSessionIdentity(Guid.NewGuid(), Guid.NewGuid(), epoch: 0));
+        peer.Client.AwaitSession(new NewfarmSessionIdentity(0xDEADBEEFCAFEF00D, epoch: 0));
 
         harness.PumpUntil(() => peer.Refusals.Count > 0, NewfarmTestHarness.WaitTimeout, "the peer to be refused");
 
-        Assert.Contains(NewfarmPacketType.SessionNotFound, peer.Refusals);
+        Assert.Contains(NewfarmRefusalReason.SessionNotFound, peer.Refusals);
     }
 
     /// <summary>
@@ -274,7 +306,7 @@ public sealed class NewfarmDirectoryTests
         NewfarmTestPeer electedPeer = successor.ElectionCount > 0 ? successor : bystander;
         NewfarmTestPeer otherPeer = electedPeer == successor ? bystander : successor;
 
-        byte[] liveCredential = Encoding.UTF8.GetBytes("ROOM-LIVE");
+        string liveCredential = "ROOM-LIVE";
 
         electedPeer.Client.PublishCredential(AdapterTag, liveCredential);
 
@@ -282,8 +314,8 @@ public sealed class NewfarmDirectoryTests
 
         // The old host comes back believing it still holds epoch 1 and tries to point the session at its own room.
         host.IsAbandoned = false;
-        host.Client.StartHosting(new NewfarmSessionIdentity(identity.SessionId, identity.SessionSecret, epoch: 1));
-        host.Client.PublishCredential(AdapterTag, Encoding.UTF8.GetBytes("ROOM-STALE"));
+        host.Client.StartHosting(new NewfarmSessionIdentity(identity.SessionId, epoch: 1));
+        host.Client.PublishCredential(AdapterTag, "ROOM-STALE");
 
         harness.PumpFor(TimeSpan.FromMilliseconds(400));
 
@@ -320,10 +352,9 @@ public sealed class NewfarmDirectoryTests
 
         harness.PumpFor(TimeSpan.FromMilliseconds(150));
 
-        byte[] credential = new byte[256];
-
-        for (int i = 0; i < credential.Length; i++)
-            credential[i] = (byte)(i % 251);
+        // Nothing that looks like a room code: newfarm does not read this, so a value with punctuation, spaces and
+        // characters outside ASCII has to survive it exactly.
+        string credential = "10.0.0.1:7777/ab cd-é";
 
         successor.Client.PublishCredential("allocation+jwt", credential);
 
@@ -331,6 +362,33 @@ public sealed class NewfarmDirectoryTests
 
         Assert.Equal(credential, bystander.ReceivedCredential!.Value.Credential);
         Assert.Equal("allocation+jwt", bystander.ReceivedCredential!.Value.AdapterTag);
+    }
+
+    /// <summary>
+    /// A credential runs to the limit and no further, which is checked where the caller can still do something about
+    /// it rather than by a directory quietly shortening it into a room nobody is in.
+    /// </summary>
+    [Fact]
+    public void ACredentialPastTheLimitIsRefusedRatherThanShortened()
+    {
+        using NewfarmTestHarness harness = new();
+
+        CreateSession(harness, out NewfarmTestPeer host);
+
+        string longestAllowed = new('r', NewfarmWireFormat.MaximumTextLength);
+
+        host.Client.PublishCredential(AdapterTag, longestAllowed);
+
+        Assert.Throws<ArgumentException>(() => host.Client.PublishCredential(AdapterTag, longestAllowed + "r"));
+        Assert.Throws<ArgumentException>(() => host.Client.PublishCredential(new string('t', NewfarmWireFormat.MaximumTextLength + 1), "ROOM-0001"));
+
+        NewfarmTestPeer client = harness.CreatePeer();
+
+        client.Client.AwaitSession(host.CreatedIdentity!.Value);
+
+        harness.PumpUntil(() => client.ReceivedCredential is not null, NewfarmTestHarness.WaitTimeout, "the client to be given the credential");
+
+        Assert.Equal(longestAllowed, client.ReceivedCredential!.Value.Credential);
     }
 
     /// <summary>
@@ -422,7 +480,7 @@ public sealed class NewfarmDirectoryTests
 
         NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
 
-        byte[] credential = Encoding.UTF8.GetBytes("ROOM-0001");
+        string credential = "ROOM-0001";
 
         host.Client.PublishCredential(AdapterTag, credential);
 
@@ -463,7 +521,7 @@ public sealed class NewfarmDirectoryTests
 
         harness.PumpUntil(() => waiter.ElectionCount > 0, NewfarmTestHarness.WaitTimeout, "the waiting peer to be elected despite the usurper's heartbeats");
 
-        byte[] credential = Encoding.UTF8.GetBytes("ROOM-ELECTED");
+        string credential = "ROOM-ELECTED";
 
         waiter.Client.PublishCredential(AdapterTag, credential);
 
@@ -489,7 +547,7 @@ public sealed class NewfarmDirectoryTests
 
         NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
 
-        byte[] deadCredential = Encoding.UTF8.GetBytes("ROOM-DEAD");
+        string deadCredential = "ROOM-DEAD";
 
         host.Client.PublishCredential(AdapterTag, deadCredential);
 
@@ -531,7 +589,7 @@ public sealed class NewfarmDirectoryTests
 
         NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
 
-        byte[] liveCredential = Encoding.UTF8.GetBytes("ROOM-LIVE");
+        string liveCredential = "ROOM-LIVE";
 
         host.ChallengeAnswerAdapterTag = AdapterTag;
         host.ChallengeAnswer = liveCredential;
@@ -569,7 +627,7 @@ public sealed class NewfarmDirectoryTests
 
         NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
 
-        byte[] credential = Encoding.UTF8.GetBytes("ROOM-BUSY");
+        string credential = "ROOM-BUSY";
 
         // The host answers every challenge, so it keeps the session and stays challengeable for the whole test.
         host.ChallengeAnswerAdapterTag = AdapterTag;
@@ -630,7 +688,7 @@ public sealed class NewfarmDirectoryTests
 
         NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
 
-        host.Client.PublishCredential(AdapterTag, Encoding.UTF8.GetBytes("ROOM-FIRST"));
+        host.Client.PublishCredential(AdapterTag, "ROOM-FIRST");
 
         NewfarmTestPeer successor = harness.CreatePeer();
 
@@ -647,7 +705,7 @@ public sealed class NewfarmDirectoryTests
 
         harness.PumpUntil(() => successor.ElectionCount > 0, TimeSpan.FromSeconds(2), "the successor to be elected on the surrender");
 
-        byte[] secondCredential = Encoding.UTF8.GetBytes("ROOM-SECOND");
+        string secondCredential = "ROOM-SECOND";
 
         successor.Client.PublishCredential(AdapterTag, secondCredential);
 
@@ -688,7 +746,7 @@ public sealed class NewfarmDirectoryTests
 
         harness.PumpUntil(() => capableClient.ElectionCount > 0, NewfarmTestHarness.WaitTimeout, "the capable client to be elected instead");
 
-        byte[] credential = Encoding.UTF8.GetBytes("ROOM-CAPABLE");
+        string credential = "ROOM-CAPABLE";
 
         capableClient.Client.PublishCredential(AdapterTag, credential);
 
@@ -696,6 +754,202 @@ public sealed class NewfarmDirectoryTests
 
         Assert.Equal(credential, decliningClient.ReceivedCredential!.Value.Credential);
         Assert.Equal(1, decliningClient.ElectionCount);
+    }
+
+    /// <summary>
+    /// Newfarm says nothing at all to a datagram too short to have been padded. Answering one would make it a weapon
+    /// against whoever's address was on the request, since the reply is several times the size of what provokes it.
+    /// </summary>
+    [Fact]
+    public void AnUnpaddedRequestIsIgnoredSoNewfarmCannotAmplify()
+    {
+        using NewfarmTestHarness harness = new();
+
+        using Socket probe = new(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+
+        probe.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+
+        IPEndPoint serverEndPoint = new(IPAddress.Loopback, harness.Port);
+
+        // The whole of a CreateSession, which padded would be answered with a session id and an epoch.
+        byte[] unpadded = [(byte)NewfarmPacketType.CreateSession];
+
+        probe.SendTo(unpadded, serverEndPoint);
+
+        Thread.Sleep(TimeSpan.FromMilliseconds(500));
+
+        Assert.Equal(0, probe.Available);
+        Assert.Equal(0, harness.Server.SessionCount);
+
+        // Padded, the very same request is answered, so it is the size and nothing else that was refused.
+        byte[] padded = new byte[NewfarmWireFormat.MinimumRequestSize];
+
+        padded[0] = (byte)NewfarmPacketType.CreateSession;
+
+        probe.SendTo(padded, serverEndPoint);
+
+        long startedTimestamp = Stopwatch.GetTimestamp();
+
+        while (probe.Available == 0 && Stopwatch.GetElapsedTime(startedTimestamp) < NewfarmTestHarness.WaitTimeout)
+            Thread.Sleep(5);
+
+        Assert.True(probe.Available > 0, "A padded request went unanswered, so the size rule is refusing legitimate traffic.");
+        Assert.True(probe.Available <= NewfarmWireFormat.MinimumRequestSize, $"Newfarm answered [{probe.Available}] bytes to a [{padded.Length}] byte request, so it can still be made to amplify.");
+    }
+
+    /// <summary>
+    /// The same, against the largest reply newfarm can be made to produce: a credential and a tag at their longest,
+    /// in characters that take four bytes each. This is the case the padding size is derived from, so if the two ever
+    /// drift apart it is this that catches it.
+    /// </summary>
+    [Fact]
+    public void TheLargestPossibleReplyStillFitsInsideTheRequestItAnswers()
+    {
+        using NewfarmTestHarness harness = new();
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        // Four bytes each once encoded, which is the worst a value of this length can weigh.
+        string longestCredential = string.Concat(Enumerable.Repeat("𝄞", NewfarmWireFormat.MaximumTextLength / 2));
+        string longestAdapterTag = string.Concat(Enumerable.Repeat("𝄢", NewfarmWireFormat.MaximumTextLength / 2));
+
+        host.Client.PublishCredential(longestAdapterTag, longestCredential);
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(200));
+
+        using Socket probe = new(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+
+        probe.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+
+        byte[] request = new byte[NewfarmWireFormat.MinimumRequestSize];
+
+        NewfarmWireFormat.WriteSessionEpoch(request, NewfarmPacketType.AwaitSession, identity.SessionId, identity.Epoch);
+
+        probe.SendTo(request, new IPEndPoint(IPAddress.Loopback, harness.Port));
+
+        long startedTimestamp = Stopwatch.GetTimestamp();
+
+        while (probe.Available == 0 && Stopwatch.GetElapsedTime(startedTimestamp) < NewfarmTestHarness.WaitTimeout)
+        {
+            harness.PumpPeers();
+
+            Thread.Sleep(5);
+        }
+
+        Assert.True(probe.Available > 0, "The request went unanswered, so this test is not measuring a reply at all.");
+        Assert.True(probe.Available <= request.Length, $"The largest reply is [{probe.Available}] bytes against a [{request.Length}] byte request, so newfarm amplifies by [{(double)probe.Available / request.Length:0.00}] times.");
+    }
+
+    /// <summary>
+    /// The limits are there for abuse and abuse alone. A great many peers sharing one address is ordinary: a school,
+    /// an office, a carrier-grade NAT. Every one of them has to be served.
+    /// </summary>
+    [Fact]
+    public void ManyPeersBehindOneAddressAreAllServed()
+    {
+        using NewfarmTestHarness harness = new();
+
+        NewfarmTestPeer[] hosts = new NewfarmTestPeer[48];
+
+        for (int i = 0; i < hosts.Length; i++)
+        {
+            hosts[i] = harness.CreatePeer();
+
+            hosts[i].Client.CreateSession();
+        }
+
+        harness.PumpUntil(() => AllHaveIdentity(hosts), NewfarmTestHarness.WaitTimeout, "every peer sharing the address to be given a session");
+
+        Assert.Equal(hosts.Length, harness.Server.SessionCount);
+
+        for (int i = 0; i < hosts.Length; i++)
+            Assert.Empty(hosts[i].Refusals);
+    }
+
+    /// <summary>
+    /// One peer going as hard as a real one ever legitimately goes, for long enough to spend a burst allowance
+    /// several times over, is never throttled.
+    /// </summary>
+    [Fact]
+    public void APeerAtItsBusiestIsNeverThrottled()
+    {
+        using NewfarmTestHarness harness = new();
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        NewfarmTestPeer busyClient = harness.CreatePeer();
+
+        busyClient.Client.AwaitSession(identity);
+
+        // Heartbeats, request retries and reports all at once for two seconds. A real peer is quieter than this.
+        for (int i = 0; i < 20; i++)
+        {
+            busyClient.Client.ReportCredentialUnreachable();
+
+            harness.PumpFor(TimeSpan.FromMilliseconds(100));
+        }
+
+        Assert.Empty(busyClient.Refusals);
+
+        // Still being served after all of that, rather than having been quietly cut off. Whether it ended up waiting
+        // or hosting is beside the point here: what matters is that it was still being listened to.
+        Assert.Equal(1, harness.Server.SessionCount);
+        Assert.NotEqual(NewfarmClientMode.Idle, busyClient.Client.Mode);
+    }
+
+    /// <summary>
+    /// A session already holding as many waiters as it is allowed turns the next arrival away, rather than growing
+    /// without end for whoever keeps coming back.
+    /// </summary>
+    [Fact]
+    public void ASessionFullOfWaitersRefusesTheNextArrival()
+    {
+        using NewfarmTestHarness harness = new(config => config.MaximumWaitersPerSession = 2);
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        NewfarmTestPeer firstClient = harness.CreatePeer();
+        NewfarmTestPeer secondClient = harness.CreatePeer();
+        NewfarmTestPeer thirdClient = harness.CreatePeer();
+
+        AbandonHost(harness, host);
+
+        firstClient.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => firstClient.ElectionCount > 0, NewfarmTestHarness.WaitTimeout, "the first client to be elected");
+
+        secondClient.Client.AwaitSession(identity);
+        thirdClient.Client.AwaitSession(identity);
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(400));
+
+        NewfarmTestPeer fourthClient = harness.CreatePeer();
+
+        fourthClient.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => fourthClient.Refusals.Count > 0, NewfarmTestHarness.WaitTimeout, "the peer past the limit to be turned away");
+
+        Assert.Contains(NewfarmRefusalReason.SessionFull, fourthClient.Refusals);
+
+        // The peers already queued are untouched, which makes this a limit on arrivals rather than a cull.
+        Assert.Empty(secondClient.Refusals);
+        Assert.Empty(thirdClient.Refusals);
+    }
+
+    /// <summary>
+    /// Returns whether every supplied peer has been given a session.
+    /// </summary>
+    /// <param name="peers">The peers to check.</param>
+    /// <returns><see langword="true"/> when none of them are still waiting on one.</returns>
+    private static bool AllHaveIdentity(NewfarmTestPeer[] peers)
+    {
+        for (int i = 0; i < peers.Length; i++)
+        {
+            if (peers[i].CreatedIdentity is null)
+                return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -783,7 +1037,7 @@ public sealed class NewfarmDirectoryTests
     /// <param name="peer">The peer to check.</param>
     /// <param name="electedPeer">The peer that published, which is not handed its own credential back.</param>
     /// <param name="credential">The credential that was published.</param>
-    private static void AssertCredential(NewfarmTestPeer peer, NewfarmTestPeer electedPeer, byte[] credential)
+    private static void AssertCredential(NewfarmTestPeer peer, NewfarmTestPeer electedPeer, string credential)
     {
         if (peer == electedPeer)
             return;

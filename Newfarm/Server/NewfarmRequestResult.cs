@@ -16,11 +16,6 @@ public enum NewfarmRequestResult : byte
     SessionNotFound,
 
     /// <summary>
-    /// The session exists, but the secret presented with the request did not match the one it was opened with.
-    /// </summary>
-    SecretRejected,
-
-    /// <summary>
     /// The request named an epoch that is no longer current, which is what a returning old host looks like.
     /// </summary>
     StaleEpoch,

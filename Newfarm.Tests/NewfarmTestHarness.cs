@@ -235,7 +235,7 @@ internal sealed class NewfarmTestPeer : IDisposable
     /// <summary>
     /// Every refusal newfarm sent this peer.
     /// </summary>
-    public List<NewfarmPacketType> Refusals { get; } = [];
+    public List<NewfarmRefusalReason> Refusals { get; } = [];
 
     /// <summary>
     /// How many times this peer has been asked to prove it is still hosting.
@@ -251,7 +251,7 @@ internal sealed class NewfarmTestPeer : IDisposable
     /// Set by a test to have the peer answer a challenge by republishing, standing in for a host whose room is
     /// genuinely still there.
     /// </summary>
-    public byte[]? ChallengeAnswer { get; set; }
+    public string? ChallengeAnswer { get; set; }
 
     /// <summary>
     /// The service tag the peer answers a challenge under.
@@ -343,9 +343,9 @@ internal sealed class NewfarmTestPeer : IDisposable
     /// <summary>
     /// Records a refusal.
     /// </summary>
-    /// <param name="newfarmPacketType">The refusal newfarm sent.</param>
-    private void OnRefused(NewfarmPacketType newfarmPacketType)
+    /// <param name="newfarmRefusalReason">Why newfarm refused.</param>
+    private void OnRefused(NewfarmRefusalReason newfarmRefusalReason)
     {
-        Refusals.Add(newfarmPacketType);
+        Refusals.Add(newfarmRefusalReason);
     }
 }

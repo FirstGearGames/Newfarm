@@ -93,16 +93,16 @@ public sealed class NewfarmClient : IDisposable
     public delegate void NewfarmCredentialAvailableHandler(NewfarmCredential credential);
 
     /// <summary>
-    /// Raised when newfarm has refused a request, whether because it holds no such session, because the secret did
-    /// not match, or because it is full.
+    /// Raised when newfarm has refused a request, whether because it holds no such session, because the session is
+    /// full, or because the directory itself is.
     /// </summary>
     public event NewfarmRefusedHandler? Refused;
 
     /// <summary>
     /// Receives the reason newfarm refused a request.
     /// </summary>
-    /// <param name="newfarmPacketType">The refusal newfarm sent.</param>
-    public delegate void NewfarmRefusedHandler(NewfarmPacketType newfarmPacketType);
+    /// <param name="newfarmRefusalReason">Why newfarm refused.</param>
+    public delegate void NewfarmRefusedHandler(NewfarmRefusalReason newfarmRefusalReason);
 
     /// <summary>
     /// The configuration the client was constructed with.
@@ -160,7 +160,7 @@ public sealed class NewfarmClient : IDisposable
     /// <summary>
     /// The bytes of a credential published but not yet confirmed.
     /// </summary>
-    private byte[]? _unconfirmedCredential;
+    private string? _unconfirmedCredential;
 
     /// <summary>
     /// The epoch a credential awaiting confirmation was published against, so a confirmation for an earlier
@@ -244,10 +244,24 @@ public sealed class NewfarmClient : IDisposable
     /// The publication is repeated from <see cref="Poll"/> until newfarm confirms it, because a publication lost on
     /// the way would leave this peer hosting a room newfarm cannot direct anyone to.
     /// </remarks>
-    public void PublishCredential(string adapterTag, byte[] credential)
+    public void PublishCredential(string adapterTag, string credential)
     {
-        _unconfirmedAdapterTag = adapterTag ?? throw new ArgumentNullException(nameof(adapterTag));
-        _unconfirmedCredential = credential ?? throw new ArgumentNullException(nameof(credential));
+        if (adapterTag is null)
+            throw new ArgumentNullException(nameof(adapterTag));
+
+        if (credential is null)
+            throw new ArgumentNullException(nameof(credential));
+
+        // Thrown rather than trimmed, because a credential that has been shortened points at nothing and would send
+        // the whole session there.
+        if (!NewfarmWireFormat.IsTextWithinLimit(adapterTag))
+            throw new ArgumentException($"An adapter tag may run to [{NewfarmWireFormat.MaximumTextLength}] characters, and this one runs to [{adapterTag.Length}].", nameof(adapterTag));
+
+        if (!NewfarmWireFormat.IsTextWithinLimit(credential))
+            throw new ArgumentException($"A credential may run to [{NewfarmWireFormat.MaximumTextLength}] characters, and this one runs to [{credential.Length}].", nameof(credential));
+
+        _unconfirmedAdapterTag = adapterTag;
+        _unconfirmedCredential = credential;
         _unconfirmedEpoch = Identity.Epoch;
 
         _outstandingRequest = NewfarmPacketType.PublishCredential;
@@ -266,7 +280,7 @@ public sealed class NewfarmClient : IDisposable
     /// </summary>
     public void DeclineElection()
     {
-        SendAuthenticated(NewfarmPacketType.DeclineElection);
+        SendSessionEpoch(NewfarmPacketType.DeclineElection);
 
         Mode = NewfarmClientMode.Waiting;
     }
@@ -319,7 +333,7 @@ public sealed class NewfarmClient : IDisposable
     /// </summary>
     public void CloseSession()
     {
-        SendAuthenticated(NewfarmPacketType.CloseSession);
+        SendSessionEpoch(NewfarmPacketType.CloseSession);
 
         Mode = NewfarmClientMode.Idle;
     }
@@ -427,15 +441,8 @@ public sealed class NewfarmClient : IDisposable
                 HandleWaiting(datagram);
                 break;
 
-            case NewfarmPacketType.SessionNotFound:
-            case NewfarmPacketType.SecretRejected:
-            case NewfarmPacketType.ServerAtCapacity:
-                _outstandingRequest = default;
-                _nextRequestRetryMilliseconds = 0;
-
-                ClearUnconfirmedCredential();
-
-                Refused?.Invoke(newfarmPacketType);
+            case NewfarmPacketType.Refused:
+                HandleRefused(datagram);
                 break;
 
             default:
@@ -450,10 +457,10 @@ public sealed class NewfarmClient : IDisposable
     /// <param name="datagram">The bytes received.</param>
     private void HandleSessionCreated(ReadOnlySpan<byte> datagram)
     {
-        if (!NewfarmWireFormat.TryReadAuthenticated(datagram, out Guid sessionId, out Guid sessionSecret, out uint epoch))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
             return;
 
-        Identity = new NewfarmSessionIdentity(sessionId, sessionSecret, epoch);
+        Identity = new NewfarmSessionIdentity(sessionId, epoch);
         Mode = NewfarmClientMode.Hosting;
 
         _outstandingRequest = default;
@@ -469,13 +476,13 @@ public sealed class NewfarmClient : IDisposable
     /// <param name="datagram">The bytes received.</param>
     private void HandleElectHost(ReadOnlySpan<byte> datagram)
     {
-        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out Guid sessionId, out uint epoch))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
             return;
 
         if (sessionId != Identity.SessionId)
             return;
 
-        Identity = new NewfarmSessionIdentity(Identity.SessionId, Identity.SessionSecret, epoch);
+        Identity = new NewfarmSessionIdentity(Identity.SessionId, epoch);
         Mode = NewfarmClientMode.Elected;
 
         _outstandingRequest = default;
@@ -492,7 +499,7 @@ public sealed class NewfarmClient : IDisposable
     /// <param name="datagram">The bytes received.</param>
     private void HandleAbortElection(ReadOnlySpan<byte> datagram)
     {
-        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out Guid sessionId, out uint epoch))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
             return;
 
         if (sessionId != Identity.SessionId)
@@ -511,16 +518,16 @@ public sealed class NewfarmClient : IDisposable
     /// <param name="datagram">The bytes received.</param>
     private void HandleCredentialAvailable(ReadOnlySpan<byte> datagram)
     {
-        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out Guid sessionId, out uint epoch))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
             return;
 
         if (sessionId != Identity.SessionId)
             return;
 
-        if (!NewfarmWireFormat.TryReadCredential(datagram, NewfarmWireFormat.SessionEpochHeaderSize, out string adapterTag, out byte[] credential))
+        if (!NewfarmWireFormat.TryReadCredential(datagram, NewfarmWireFormat.SessionEpochHeaderSize, out string adapterTag, out string credential))
             return;
 
-        Identity = new NewfarmSessionIdentity(Identity.SessionId, Identity.SessionSecret, epoch);
+        Identity = new NewfarmSessionIdentity(Identity.SessionId, epoch);
 
         _outstandingRequest = default;
         _nextRequestRetryMilliseconds = 0;
@@ -534,7 +541,7 @@ public sealed class NewfarmClient : IDisposable
     /// <param name="datagram">The bytes received.</param>
     private void HandleProveHosting(ReadOnlySpan<byte> datagram)
     {
-        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out Guid sessionId, out uint epoch))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
             return;
 
         if (sessionId != Identity.SessionId || Mode is not NewfarmClientMode.Hosting)
@@ -544,18 +551,39 @@ public sealed class NewfarmClient : IDisposable
     }
 
     /// <summary>
+    /// Reports that newfarm refused a request, and stops repeating whatever it refused.
+    /// </summary>
+    /// <param name="datagram">The bytes received.</param>
+    private void HandleRefused(ReadOnlySpan<byte> datagram)
+    {
+        if (!NewfarmWireFormat.TryReadRefused(datagram, out ulong sessionId, out NewfarmRefusalReason newfarmRefusalReason))
+            return;
+
+        // A refusal naming no session answers a request that named none either, which is only ever CreateSession.
+        if (sessionId is not 0 && sessionId != Identity.SessionId)
+            return;
+
+        _outstandingRequest = default;
+        _nextRequestRetryMilliseconds = 0;
+
+        ClearUnconfirmedCredential();
+
+        Refused?.Invoke(newfarmRefusalReason);
+    }
+
+    /// <summary>
     /// Steps down from hosting, because newfarm has taken the session off this peer.
     /// </summary>
     /// <param name="datagram">The bytes received.</param>
     private void HandleHostingRevoked(ReadOnlySpan<byte> datagram)
     {
-        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out Guid sessionId, out uint epoch))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
             return;
 
         if (sessionId != Identity.SessionId || Mode is not NewfarmClientMode.Hosting)
             return;
 
-        Identity = new NewfarmSessionIdentity(Identity.SessionId, Identity.SessionSecret, epoch);
+        Identity = new NewfarmSessionIdentity(Identity.SessionId, epoch);
 
         // Waiting rather than idle, so this peer keeps its place in the session and is told where it moves to.
         Mode = NewfarmClientMode.Waiting;
@@ -573,7 +601,7 @@ public sealed class NewfarmClient : IDisposable
     /// <param name="datagram">The bytes received.</param>
     private void HandleCredentialAccepted(ReadOnlySpan<byte> datagram)
     {
-        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out Guid sessionId, out uint epoch))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
             return;
 
         if (sessionId != Identity.SessionId || epoch != _unconfirmedEpoch)
@@ -588,13 +616,13 @@ public sealed class NewfarmClient : IDisposable
     /// <param name="datagram">The bytes received.</param>
     private void HandleWaiting(ReadOnlySpan<byte> datagram)
     {
-        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out Guid sessionId, out uint epoch))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
             return;
 
         if (sessionId != Identity.SessionId)
             return;
 
-        Identity = new NewfarmSessionIdentity(Identity.SessionId, Identity.SessionSecret, epoch);
+        Identity = new NewfarmSessionIdentity(Identity.SessionId, epoch);
 
         // Waiting is the answer to all three of these, and without clearing them here a report or a surrender would
         // be repeated at the retry interval for as long as the peer stayed queued.
@@ -621,14 +649,14 @@ public sealed class NewfarmClient : IDisposable
         {
             _nextHeartbeatMilliseconds = nowMilliseconds + Config.HostHeartbeatIntervalMilliseconds;
 
-            SendAuthenticated(NewfarmPacketType.HostHeartbeat);
+            SendSessionEpoch(NewfarmPacketType.HostHeartbeat);
 
             return;
         }
 
         _nextHeartbeatMilliseconds = nowMilliseconds + Config.WaiterHeartbeatIntervalMilliseconds;
 
-        SendAuthenticated(NewfarmPacketType.WaiterHeartbeat);
+        SendSessionEpoch(NewfarmPacketType.WaiterHeartbeat);
     }
 
     /// <summary>
@@ -656,7 +684,7 @@ public sealed class NewfarmClient : IDisposable
             return;
         }
 
-        SendAuthenticated(_outstandingRequest);
+        SendSessionEpoch(_outstandingRequest);
     }
 
     /// <summary>
@@ -675,7 +703,7 @@ public sealed class NewfarmClient : IDisposable
             return;
         }
 
-        SendAuthenticated(newfarmPacketType);
+        SendSessionEpoch(newfarmPacketType);
     }
 
     /// <summary>
@@ -687,7 +715,7 @@ public sealed class NewfarmClient : IDisposable
         if (_unconfirmedAdapterTag is null || _unconfirmedCredential is null)
             return;
 
-        int length = NewfarmWireFormat.WriteAuthenticated(_sendBuffer, NewfarmPacketType.PublishCredential, Identity.SessionId, Identity.SessionSecret, _unconfirmedEpoch);
+        int length = NewfarmWireFormat.WriteSessionEpoch(_sendBuffer, NewfarmPacketType.PublishCredential, Identity.SessionId, _unconfirmedEpoch);
 
         length += NewfarmWireFormat.WriteCredential(new Span<byte>(_sendBuffer, length, _sendBuffer.Length - length), _unconfirmedAdapterTag, _unconfirmedCredential);
 
@@ -711,12 +739,12 @@ public sealed class NewfarmClient : IDisposable
     }
 
     /// <summary>
-    /// Sends a message carrying the session id, its secret and the current epoch.
+    /// Sends a message carrying the session id and the current epoch.
     /// </summary>
     /// <param name="newfarmPacketType">The message to send.</param>
-    private void SendAuthenticated(NewfarmPacketType newfarmPacketType)
+    private void SendSessionEpoch(NewfarmPacketType newfarmPacketType)
     {
-        int length = NewfarmWireFormat.WriteAuthenticated(_sendBuffer, newfarmPacketType, Identity.SessionId, Identity.SessionSecret, Identity.Epoch);
+        int length = NewfarmWireFormat.WriteSessionEpoch(_sendBuffer, newfarmPacketType, Identity.SessionId, Identity.Epoch);
 
         Send(length);
     }
@@ -738,9 +766,13 @@ public sealed class NewfarmClient : IDisposable
     /// <param name="length">How many bytes of the send buffer to send.</param>
     private void Send(int length)
     {
+        // Padded because newfarm ignores anything shorter, which is what keeps it from being turned into a weapon
+        // against a third party.
+        int paddedLength = NewfarmWireFormat.PadRequest(_sendBuffer, length);
+
         try
         {
-            _socket.SendTo(_sendBuffer, 0, length, SocketFlags.None, Config.ServerEndPoint);
+            _socket.SendTo(_sendBuffer, 0, paddedLength, SocketFlags.None, Config.ServerEndPoint);
         }
         catch (SocketException)
         {

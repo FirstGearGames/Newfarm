@@ -21,7 +21,7 @@ internal sealed class NewfarmSessionRegistry
     /// <summary>
     /// Every live session, keyed by the identity its host distributes.
     /// </summary>
-    private readonly Dictionary<Guid, NewfarmSession> _sessionsById = [];
+    private readonly Dictionary<ulong, NewfarmSession> _sessionsById = [];
 
     /// <summary>
     /// The configuration the timings and caps are read from.
@@ -58,10 +58,9 @@ internal sealed class NewfarmSessionRegistry
             return false;
         }
 
-        Guid sessionId = CreateIdentity();
-        Guid sessionSecret = CreateIdentity();
+        ulong sessionId = CreateSessionId();
 
-        session = new NewfarmSession(sessionId, sessionSecret, hostEndPoint, nowMilliseconds);
+        session = new NewfarmSession(sessionId, hostEndPoint, nowMilliseconds);
 
         _sessionsById.Add(sessionId, session);
 
@@ -69,23 +68,15 @@ internal sealed class NewfarmSessionRegistry
     }
 
     /// <summary>
-    /// Looks a session up and checks the secret presented with the request.
+    /// Looks a session up.
     /// </summary>
     /// <param name="sessionId">The session being addressed.</param>
-    /// <param name="sessionSecret">The secret the peer presented.</param>
     /// <param name="session">When this returns <see cref="NewfarmRequestResult.Accepted"/>, the session found.</param>
     /// <returns>Why the request was refused, or <see cref="NewfarmRequestResult.Accepted"/>.</returns>
-    public NewfarmRequestResult TryResolve(Guid sessionId, Guid sessionSecret, out NewfarmSession? session)
+    public NewfarmRequestResult TryResolve(ulong sessionId, out NewfarmSession? session)
     {
         if (!_sessionsById.TryGetValue(sessionId, out session))
             return NewfarmRequestResult.SessionNotFound;
-
-        if (!NewfarmWireFormat.FixedTimeEquals(session.SessionSecret, sessionSecret))
-        {
-            session = null;
-
-            return NewfarmRequestResult.SecretRejected;
-        }
 
         return NewfarmRequestResult.Accepted;
     }
@@ -104,6 +95,11 @@ internal sealed class NewfarmSessionRegistry
     /// </remarks>
     public NewfarmWaitOutcome AddWaiter(NewfarmSession session, IPEndPoint waiterEndPoint, long nowMilliseconds)
     {
+        // Peers already in the queue are always let through, so a full session still keeps the ones it has informed
+        // and only turns away arrivals it has no room to inform.
+        if (session.WaiterOrder.Count >= _config.MaximumWaitersPerSession && !session.WaiterHeartbeats.ContainsKey(waiterEndPoint))
+            return NewfarmWaitOutcome.SessionFull;
+
         session.AddWaiter(waiterEndPoint, nowMilliseconds);
 
         if (session.HasCredential && !session.IsHostLost(nowMilliseconds, _config.HostTimeoutMilliseconds))
@@ -135,7 +131,7 @@ internal sealed class NewfarmSessionRegistry
     /// is registered. Without that, a peer that lost only its own link would be queued against a session newfarm
     /// could not say the whereabouts of, and would sit there while a perfectly healthy host carried on.
     /// </remarks>
-    public NewfarmRequestResult PublishCredential(NewfarmSession session, IPEndPoint publisherEndPoint, uint epoch, string adapterTag, byte[] credential, long nowMilliseconds, List<NewfarmNotification> notifications)
+    public NewfarmRequestResult PublishCredential(NewfarmSession session, IPEndPoint publisherEndPoint, uint epoch, string adapterTag, string credential, long nowMilliseconds, List<NewfarmNotification> notifications)
     {
         if (epoch != session.Epoch)
             return NewfarmRequestResult.StaleEpoch;
@@ -247,9 +243,9 @@ internal sealed class NewfarmSessionRegistry
     /// <param name="notifications">Receives everything that should be sent as a result of this sweep.</param>
     public void Sweep(long nowMilliseconds, List<NewfarmNotification> notifications)
     {
-        List<Guid>? expiredSessionIds = null;
+        List<ulong>? expiredSessionIds = null;
 
-        foreach (KeyValuePair<Guid, NewfarmSession> entry in _sessionsById)
+        foreach (KeyValuePair<ulong, NewfarmSession> entry in _sessionsById)
         {
             NewfarmSession session = entry.Value;
 
@@ -452,22 +448,41 @@ internal sealed class NewfarmSessionRegistry
     }
 
     /// <summary>
-    /// Produces a session id or secret from cryptographically strong bytes, rather than from
-    /// <see cref="Guid.NewGuid"/>, because the secret is what stands between a leaked id and a stolen session.
+    /// Produces a session id from cryptographically strong bytes, never from an ordinary random number generator.
     /// </summary>
-    /// <returns>A random identity.</returns>
-    private static Guid CreateIdentity()
+    /// <returns>A session id nobody can work out from the ones already handed out.</returns>
+    /// <remarks>
+    /// The id is the whole of a session's security: whoever holds one can be elected to host that session and can say
+    /// where it has moved to. Sixty four unguessable bits is what that rests on, so it comes from a cryptographic
+    /// source, and a session id nobody was given is a session id nobody can find.
+    /// A collision would hand one session's players to another, so an id already in use is drawn again.
+    /// </remarks>
+    private ulong CreateSessionId()
     {
-        byte[] identityBytes = new byte[NewfarmWireFormat.IdentitySize];
+        byte[] sessionIdBytes = new byte[NewfarmWireFormat.SessionIdSize];
 
+        while (true)
+        {
 #if NET8_0_OR_GREATER
-        RandomNumberGenerator.Fill(identityBytes);
+            RandomNumberGenerator.Fill(sessionIdBytes);
 #else
-        using RandomNumberGenerator randomNumberGenerator = RandomNumberGenerator.Create();
-
-        randomNumberGenerator.GetBytes(identityBytes);
+            using (RandomNumberGenerator randomNumberGenerator = RandomNumberGenerator.Create())
+            {
+                randomNumberGenerator.GetBytes(sessionIdBytes);
+            }
 #endif
+            ulong sessionId = 0;
 
-        return new Guid(identityBytes);
+            for (int i = 0; i < sessionIdBytes.Length; i++)
+                sessionId = (sessionId << 8) | sessionIdBytes[i];
+
+            if (sessionId is not UnusableSessionId && !_sessionsById.ContainsKey(sessionId))
+                return sessionId;
+        }
     }
+
+    /// <summary>
+    /// Never handed out as a session id, so that a default or zeroed value never names a real session.
+    /// </summary>
+    private const ulong UnusableSessionId = 0;
 }
