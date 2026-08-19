@@ -242,6 +242,14 @@ public sealed class NewfarmServer : IDisposable
                 HandleCloseSession(datagram, senderEndPoint);
                 break;
 
+            case NewfarmPacketType.SurrenderHosting:
+                HandleSurrenderHosting(datagram, senderEndPoint, nowMilliseconds);
+                break;
+
+            case NewfarmPacketType.CredentialUnreachable:
+                HandleCredentialUnreachable(datagram, senderEndPoint, nowMilliseconds);
+                break;
+
             case NewfarmPacketType.AwaitSession:
                 HandleAwaitSession(datagram, senderEndPoint, nowMilliseconds);
                 break;
@@ -371,6 +379,56 @@ public sealed class NewfarmServer : IDisposable
         _registry.RemoveSession(session!);
 
         Log($"Newfarm closed session [{sessionId:N}] at the request of [{senderEndPoint}].");
+    }
+
+    /// <summary>
+    /// Hands the session on because its host has said it is no longer hosting.
+    /// </summary>
+    /// <param name="datagram">The bytes received.</param>
+    /// <param name="senderEndPoint">The peer that sent them.</param>
+    /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
+    private void HandleSurrenderHosting(ReadOnlySpan<byte> datagram, IPEndPoint senderEndPoint, long nowMilliseconds)
+    {
+        if (!NewfarmWireFormat.TryReadAuthenticated(datagram, out Guid sessionId, out Guid sessionSecret, out uint epoch))
+            return;
+
+        if (!TryResolveOrRefuse(sessionId, sessionSecret, senderEndPoint, out NewfarmSession? session))
+            return;
+
+        _notifications.Clear();
+
+        NewfarmRequestResult surrenderResult = _registry.SurrenderHosting(session!, senderEndPoint, epoch, nowMilliseconds, _notifications);
+
+        if (surrenderResult is not NewfarmRequestResult.Accepted)
+            return;
+
+        Log($"Newfarm took session [{sessionId:N}] back from [{senderEndPoint}], which gave up hosting it.");
+
+        SendNotifications();
+    }
+
+    /// <summary>
+    /// Records that the sender cannot reach the host of a session.
+    /// </summary>
+    /// <param name="datagram">The bytes received.</param>
+    /// <param name="senderEndPoint">The peer that sent them.</param>
+    /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
+    private void HandleCredentialUnreachable(ReadOnlySpan<byte> datagram, IPEndPoint senderEndPoint, long nowMilliseconds)
+    {
+        if (!NewfarmWireFormat.TryReadAuthenticated(datagram, out Guid sessionId, out Guid sessionSecret, out uint epoch))
+            return;
+
+        if (!TryResolveOrRefuse(sessionId, sessionSecret, senderEndPoint, out NewfarmSession? session))
+            return;
+
+        if (_registry.ReportCredentialUnreachable(session!, senderEndPoint, epoch, nowMilliseconds) is not NewfarmRequestResult.Accepted)
+            return;
+
+        Log($"Newfarm heard from [{senderEndPoint}] that session [{sessionId:N}] cannot be reached at the credential it holds.");
+
+        session!.RecordWaiterKeepAlive(senderEndPoint, nowMilliseconds);
+
+        SendSessionEpoch(NewfarmPacketType.Waiting, session, senderEndPoint);
     }
 
     /// <summary>

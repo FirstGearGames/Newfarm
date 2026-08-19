@@ -173,6 +173,59 @@ internal sealed class NewfarmSessionRegistry
 
         WithdrawElection(session, nowMilliseconds, notifications);
 
+        session.RecordDeclined(decliningEndPoint);
+
+        return NewfarmRequestResult.Accepted;
+    }
+
+    /// <summary>
+    /// Gives the session up on behalf of the peer hosting it, and elects a replacement at once.
+    /// </summary>
+    /// <param name="session">The session being handed on.</param>
+    /// <param name="hostEndPoint">The peer giving the session up.</param>
+    /// <param name="epoch">The epoch the peer believes it is hosting.</param>
+    /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
+    /// <param name="notifications">Receives the election for the replacement.</param>
+    /// <returns>Why the surrender was refused, or <see cref="NewfarmRequestResult.Accepted"/>.</returns>
+    /// <remarks>
+    /// The peer stays in the session as a waiter, because giving up hosting is not the same as leaving: the usual
+    /// reason is a player who dropped out of the match but is still sitting there, and it should be handed the
+    /// credential of whoever hosts next like anyone else.
+    /// </remarks>
+    public NewfarmRequestResult SurrenderHosting(NewfarmSession session, IPEndPoint hostEndPoint, uint epoch, long nowMilliseconds, List<NewfarmNotification> notifications)
+    {
+        if (epoch != session.Epoch)
+            return NewfarmRequestResult.StaleEpoch;
+
+        if (session.HostEndPoint is null || !session.HostEndPoint.Equals(hostEndPoint))
+            return NewfarmRequestResult.NotHosting;
+
+        session.SurrenderHosting(nowMilliseconds);
+        session.AddWaiter(hostEndPoint, nowMilliseconds);
+        session.RecordDeclined(hostEndPoint);
+
+        TryElectNextWaiter(session, nowMilliseconds, notifications);
+
+        return NewfarmRequestResult.Accepted;
+    }
+
+    /// <summary>
+    /// Records that a peer cannot reach the host with the credential it holds, and queues it so it can be elected if
+    /// the host turns out to be gone.
+    /// </summary>
+    /// <param name="session">The session the peer cannot reach.</param>
+    /// <param name="reporterEndPoint">The peer reporting.</param>
+    /// <param name="epoch">The epoch the peer believes is current.</param>
+    /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
+    /// <returns>Why the report was refused, or <see cref="NewfarmRequestResult.Accepted"/>.</returns>
+    public NewfarmRequestResult ReportCredentialUnreachable(NewfarmSession session, IPEndPoint reporterEndPoint, uint epoch, long nowMilliseconds)
+    {
+        if (epoch != session.Epoch)
+            return NewfarmRequestResult.StaleEpoch;
+
+        session.AddWaiter(reporterEndPoint, nowMilliseconds);
+        session.RecordCredentialUnreachable(reporterEndPoint);
+
         return NewfarmRequestResult.Accepted;
     }
 
@@ -205,6 +258,8 @@ internal sealed class NewfarmSessionRegistry
             if (session.HostEndPoint is not null && session.IsHostLost(nowMilliseconds, _config.HostTimeoutMilliseconds))
                 session.ClearHost(nowMilliseconds);
 
+            ChallengeHostIfUnreachable(session, nowMilliseconds, notifications);
+
             if (session.IsElectionExpired(nowMilliseconds))
                 WithdrawElection(session, nowMilliseconds, notifications);
             else if (IsElectedPeerLost(session, nowMilliseconds))
@@ -230,6 +285,49 @@ internal sealed class NewfarmSessionRegistry
     }
 
     /// <summary>
+    /// Asks a host its peers cannot reach to prove it is still hosting, and stands it down once enough rounds have
+    /// closed without that proof.
+    /// </summary>
+    /// <param name="session">The session to check.</param>
+    /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
+    /// <param name="notifications">Receives the challenge for the host.</param>
+    /// <remarks>
+    /// A heartbeat only says a peer's connection to newfarm works. A peer whose game has wedged, whose room has gone,
+    /// or whose route to the relay has failed while its route here has not, keeps heartbeating perfectly while
+    /// hosting nothing, and without this the session would wait on it forever. Its peers are the ones who know, so
+    /// their reports are what newfarm acts on, and the host is given the chance to answer with the one thing that
+    /// settles it.
+    /// </remarks>
+    private void ChallengeHostIfUnreachable(NewfarmSession session, long nowMilliseconds, List<NewfarmNotification> notifications)
+    {
+        if (session.HostEndPoint is null)
+            return;
+
+        if (session.IsHostChallengeOutstanding)
+        {
+            if (nowMilliseconds < session.HostChallengeDeadlineMilliseconds)
+                return;
+
+            if (!session.CloseHostChallenge())
+                return;
+
+            if (session.IneffectiveHostChallengeCount < _config.MaximumIneffectiveHostChallenges)
+                return;
+
+            session.ClearHost(nowMilliseconds);
+
+            return;
+        }
+
+        if (!session.HasCurrentUnreachableReports)
+            return;
+
+        session.BeginHostChallenge(nowMilliseconds, _config.HostChallengeIntervalMilliseconds);
+
+        notifications.Add(new NewfarmNotification(NewfarmPacketType.ProveHosting, session.HostEndPoint, session));
+    }
+
+    /// <summary>
     /// Elects the longest waiting peer, opening a new epoch first so anything published against the previous one is
     /// refused.
     /// </summary>
@@ -238,10 +336,20 @@ internal sealed class NewfarmSessionRegistry
     /// <param name="notifications">Receives the election for the chosen peer.</param>
     private void TryElectNextWaiter(NewfarmSession session, long nowMilliseconds, List<NewfarmNotification> notifications)
     {
-        if (session.WaiterOrder.Count == 0)
-            return;
+        IPEndPoint? electedEndPoint = null;
 
-        IPEndPoint electedEndPoint = session.WaiterOrder[0];
+        for (int i = 0; i < session.WaiterOrder.Count; i++)
+        {
+            if (session.DeclinedEndPoints.Contains(session.WaiterOrder[i]))
+                continue;
+
+            electedEndPoint = session.WaiterOrder[i];
+
+            break;
+        }
+
+        if (electedEndPoint is null)
+            return;
 
         session.AdvanceEpoch();
         session.Elect(electedEndPoint, nowMilliseconds, _config.ElectionDeadlineMilliseconds);

@@ -37,6 +37,26 @@ public enum NewfarmPacketType : byte
     CloseSession = 0xA4,
 
     /// <summary>
+    /// The hosting peer gives the session up while staying in it, which hands the session on at once instead of
+    /// waiting for its heartbeat to lapse.
+    /// </summary>
+    /// <remarks>
+    /// This is the graceful half of the answer to a host that is online but no longer hosting: the peer that left
+    /// the match, or shut its server down, says so rather than leaving everyone to infer it.
+    /// </remarks>
+    SurrenderHosting = 0xA7,
+
+    /// <summary>
+    /// A peer reports that the credential it holds does not get it to the host, which is what makes newfarm ask the
+    /// host to prove it is still hosting.
+    /// </summary>
+    /// <remarks>
+    /// The ungraceful half: peers are the only ones who know whether the host is actually serving them, so this is
+    /// how a host that heartbeats but cannot host is found out.
+    /// </remarks>
+    CredentialUnreachable = 0xA8,
+
+    /// <summary>
     /// A peer that has lost its host joins the waiting set for a session, to be elected or to be handed the
     /// credential of whoever is.
     /// </summary>
@@ -87,6 +107,12 @@ public enum NewfarmPacketType : byte
     /// Newfarm is already holding as many sessions as it is configured to allow.
     /// </summary>
     ServerAtCapacity = 0xB7,
+
+    /// <summary>
+    /// Newfarm asks a host that peers cannot reach to publish a credential, which is the only proof of hosting it
+    /// can ask for, and stands the host down if it cannot give one.
+    /// </summary>
+    ProveHosting = 0xB9,
 
     /// <summary>
     /// Newfarm confirms it has taken a published credential, which is what stops the publisher repeating it.

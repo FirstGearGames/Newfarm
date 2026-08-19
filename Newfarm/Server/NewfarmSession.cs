@@ -67,6 +67,57 @@ internal sealed class NewfarmSession
     public long HostlessSinceMilliseconds { get; private set; }
 
     /// <summary>
+    /// Increments every time a credential is accepted, naming the current one so a report of it being unreachable
+    /// can be told apart from a report of the one before it.
+    /// </summary>
+    public uint AttestationId { get; private set; }
+
+    /// <summary>
+    /// The peers that have reported being unable to reach the host, each against the
+    /// <see cref="AttestationId"/> that was current when it reported.
+    /// </summary>
+    public Dictionary<IPEndPoint, uint> UnreachableReports { get; } = [];
+
+    /// <summary>
+    /// True while the host has been asked to prove it is still hosting and the round has not yet closed.
+    /// </summary>
+    public bool IsHostChallengeOutstanding { get; private set; }
+
+    /// <summary>
+    /// When the outstanding challenge round closes, in <see cref="NewfarmClock.Milliseconds"/> milliseconds.
+    /// </summary>
+    public long HostChallengeDeadlineMilliseconds { get; private set; }
+
+    /// <summary>
+    /// How many challenge rounds have closed in a row with peers still unable to reach the host.
+    /// </summary>
+    public uint IneffectiveHostChallengeCount { get; private set; }
+
+    /// <summary>
+    /// The peers that have said they cannot host this session, which are passed over when a replacement is elected
+    /// but still receive the credential of whoever does host it.
+    /// </summary>
+    public HashSet<IPEndPoint> DeclinedEndPoints { get; } = [];
+
+    /// <summary>
+    /// Returns whether any peer says it cannot reach the host as things currently stand, rather than as they stood
+    /// before the newest credential was published.
+    /// </summary>
+    public bool HasCurrentUnreachableReports
+    {
+        get
+        {
+            foreach (KeyValuePair<IPEndPoint, uint> report in UnreachableReports)
+            {
+                if (report.Value == AttestationId)
+                    return true;
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Names the service <see cref="Credential"/> belongs to, so a peer can tell whether it is able to use it.
     /// </summary>
     public string AdapterTag { get; private set; } = string.Empty;
@@ -163,6 +214,71 @@ internal sealed class NewfarmSession
     {
         HostEndPoint = null;
         HostlessSinceMilliseconds = nowMilliseconds;
+
+        UnreachableReports.Clear();
+        DeclinedEndPoints.Clear();
+
+        IsHostChallengeOutstanding = false;
+        HostChallengeDeadlineMilliseconds = 0;
+        IneffectiveHostChallengeCount = 0;
+    }
+
+    /// <summary>
+    /// Records that a peer cannot reach the host with the credential it holds.
+    /// </summary>
+    /// <param name="reporterEndPoint">The peer that cannot reach the host.</param>
+    public void RecordCredentialUnreachable(IPEndPoint reporterEndPoint)
+    {
+        UnreachableReports[reporterEndPoint] = AttestationId;
+    }
+
+    /// <summary>
+    /// Asks the host to prove it is still hosting, and starts the round it has to answer in.
+    /// </summary>
+    /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
+    /// <param name="challengeIntervalMilliseconds">How long the host has to answer.</param>
+    public void BeginHostChallenge(long nowMilliseconds, uint challengeIntervalMilliseconds)
+    {
+        IsHostChallengeOutstanding = true;
+        HostChallengeDeadlineMilliseconds = nowMilliseconds + challengeIntervalMilliseconds;
+    }
+
+    /// <summary>
+    /// Closes an outstanding challenge round and reports whether it settled anything.
+    /// </summary>
+    /// <returns><see langword="true"/> when peers still cannot reach the host, so the round achieved nothing.</returns>
+    /// <remarks>
+    /// A host that answered cleared the reports by publishing, since accepting a credential moves
+    /// <see cref="AttestationId"/> on and empties them. Reports left standing therefore mean either that the host
+    /// said nothing, or that what it published left the peers no better off. Both are the same failure from the
+    /// peers' side, and both are counted the same way.
+    /// </remarks>
+    public bool CloseHostChallenge()
+    {
+        IsHostChallengeOutstanding = false;
+        HostChallengeDeadlineMilliseconds = 0;
+
+        if (!HasCurrentUnreachableReports)
+        {
+            IneffectiveHostChallengeCount = 0;
+
+            return false;
+        }
+
+        IneffectiveHostChallengeCount++;
+
+        UnreachableReports.Clear();
+
+        return true;
+    }
+
+    /// <summary>
+    /// Records that a peer has said it cannot host, so it is passed over when a replacement is elected.
+    /// </summary>
+    /// <param name="decliningEndPoint">The peer that cannot host.</param>
+    public void RecordDeclined(IPEndPoint decliningEndPoint)
+    {
+        DeclinedEndPoints.Add(decliningEndPoint);
     }
 
     /// <summary>
@@ -203,6 +319,7 @@ internal sealed class NewfarmSession
         WaiterOrder.Remove(waiterEndPoint);
         WaiterHeartbeats.Remove(waiterEndPoint);
         WaiterKeepAlives.Remove(waiterEndPoint);
+        DeclinedEndPoints.Remove(waiterEndPoint);
     }
 
     /// <summary>
@@ -310,6 +427,21 @@ internal sealed class NewfarmSession
 
         ElectedEndPoint = null;
         ElectionDeadlineMilliseconds = 0;
+
+        AttestationId++;
+
+        UnreachableReports.Clear();
+        DeclinedEndPoints.Clear();
+    }
+
+    /// <summary>
+    /// Gives the session up on behalf of the peer hosting it, leaving the session and its waiters intact so a
+    /// replacement can be elected at once.
+    /// </summary>
+    /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
+    public void SurrenderHosting(long nowMilliseconds)
+    {
+        ClearHost(nowMilliseconds);
     }
 
     /// <summary>
@@ -323,6 +455,13 @@ internal sealed class NewfarmSession
         AdapterTag = string.Empty;
         Credential = null;
         CredentialPublishedMilliseconds = 0;
+        AttestationId = 0;
+
+        UnreachableReports.Clear();
+
+        IsHostChallengeOutstanding = false;
+        HostChallengeDeadlineMilliseconds = 0;
+        IneffectiveHostChallengeCount = 0;
     }
 
     /// <summary>

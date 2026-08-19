@@ -59,6 +59,7 @@ internal sealed class NewfarmTestHarness : IDisposable
             ElectionDeadlineMilliseconds = 1500,
             CredentialGraceMilliseconds = 3000,
             HostlessGraceMilliseconds = 30000,
+            HostChallengeIntervalMilliseconds = 300,
             WaitingKeepAliveIntervalMilliseconds = 150,
             SweepIntervalMilliseconds = 50,
         };
@@ -235,6 +236,22 @@ internal sealed class NewfarmTestPeer : IDisposable
     public List<NewfarmPacketType> Refusals { get; } = [];
 
     /// <summary>
+    /// How many times this peer has been asked to prove it is still hosting.
+    /// </summary>
+    public int ChallengeCount { get; private set; }
+
+    /// <summary>
+    /// Set by a test to have the peer answer a challenge by republishing, standing in for a host whose room is
+    /// genuinely still there.
+    /// </summary>
+    public byte[]? ChallengeAnswer { get; set; }
+
+    /// <summary>
+    /// The service tag the peer answers a challenge under.
+    /// </summary>
+    public string ChallengeAnswerAdapterTag { get; set; } = string.Empty;
+
+    /// <summary>
     /// Creates a peer and subscribes to everything its client reports.
     /// </summary>
     /// <param name="config">The configuration naming the directory to talk to.</param>
@@ -246,6 +263,7 @@ internal sealed class NewfarmTestPeer : IDisposable
         Client.ElectedToHost += OnElectedToHost;
         Client.ElectionAborted += OnElectionAborted;
         Client.CredentialAvailable += OnCredentialAvailable;
+        Client.HostingChallenged += OnHostingChallenged;
         Client.Refused += OnRefused;
     }
 
@@ -289,6 +307,20 @@ internal sealed class NewfarmTestPeer : IDisposable
     private void OnCredentialAvailable(NewfarmCredential credential)
     {
         ReceivedCredential = credential;
+    }
+
+    /// <summary>
+    /// Records a demand to prove hosting, and answers it when the test has given it something to answer with.
+    /// </summary>
+    /// <param name="epoch">The epoch the session is being hosted for.</param>
+    private void OnHostingChallenged(uint epoch)
+    {
+        ChallengeCount++;
+
+        if (ChallengeAnswer is null)
+            return;
+
+        Client.PublishCredential(ChallengeAnswerAdapterTag, ChallengeAnswer);
     }
 
     /// <summary>

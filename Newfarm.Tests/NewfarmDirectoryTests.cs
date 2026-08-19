@@ -478,6 +478,162 @@ public sealed class NewfarmDirectoryTests
     }
 
     /// <summary>
+    /// The case a heartbeat cannot answer: the host is online and heartbeating, but its game is no longer hosting
+    /// anything. The peers are the only ones who know, so their reports have to be able to override a live heartbeat.
+    /// </summary>
+    [Fact]
+    public void AHostThatHeartbeatsButCannotHostIsStoodDown()
+    {
+        using NewfarmTestHarness harness = new();
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        byte[] deadCredential = Encoding.UTF8.GetBytes("ROOM-DEAD");
+
+        host.Client.PublishCredential(AdapterTag, deadCredential);
+
+        NewfarmTestPeer strandedClient = harness.CreatePeer();
+
+        strandedClient.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => strandedClient.ReceivedCredential is not null, NewfarmTestHarness.WaitTimeout, "the client to be given the credential");
+
+        // The host keeps heartbeating throughout, and never answers a challenge, which is what a wedged game or a
+        // host that lost its route to the relay looks like from here.
+        for (int i = 0; i < 4; i++)
+        {
+            strandedClient.Client.ReportCredentialUnreachable();
+
+            harness.PumpFor(TimeSpan.FromMilliseconds(500));
+
+            if (strandedClient.ElectionCount > 0)
+                break;
+        }
+
+        Assert.True(host.ChallengeCount > 0, "The host was never asked to prove it was hosting.");
+        Assert.True(strandedClient.ElectionCount > 0, "The stranded client was never elected, so a heartbeating host stalled the session.");
+        Assert.Equal(NewfarmClientMode.Hosting, host.Client.Mode);
+    }
+
+    /// <summary>
+    /// The other side of that: a host that answers the challenge keeps the session, so one peer with a broken link
+    /// cannot take a working session away from everybody else.
+    /// </summary>
+    [Fact]
+    public void AHostThatAnswersTheChallengeKeepsTheSession()
+    {
+        using NewfarmTestHarness harness = new();
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        byte[] liveCredential = Encoding.UTF8.GetBytes("ROOM-LIVE");
+
+        host.ChallengeAnswerAdapterTag = AdapterTag;
+        host.ChallengeAnswer = liveCredential;
+
+        host.Client.PublishCredential(AdapterTag, liveCredential);
+
+        NewfarmTestPeer complainingClient = harness.CreatePeer();
+
+        complainingClient.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => complainingClient.ReceivedCredential is not null, NewfarmTestHarness.WaitTimeout, "the client to be given the credential");
+
+        for (int i = 0; i < 4; i++)
+        {
+            complainingClient.Client.ReportCredentialUnreachable();
+
+            harness.PumpFor(TimeSpan.FromMilliseconds(500));
+        }
+
+        Assert.True(host.ChallengeCount > 0, "The host was never asked to prove it was hosting.");
+        Assert.Equal(0, complainingClient.ElectionCount);
+        Assert.Equal(1u, identity.Epoch);
+        Assert.Equal(NewfarmClientMode.Hosting, host.Client.Mode);
+    }
+
+    /// <summary>
+    /// A host that knows it has stopped hosting says so, and the session moves on at once rather than waiting out a
+    /// heartbeat that is never going to lapse.
+    /// </summary>
+    [Fact]
+    public void AHostThatGivesUpHostingHandsOverImmediately()
+    {
+        // A host timeout far longer than the test runs for, so an election here can only have come from the
+        // surrender and never from the heartbeat lapsing.
+        using NewfarmTestHarness harness = new(config => config.HostTimeoutMilliseconds = 30000);
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        host.Client.PublishCredential(AdapterTag, Encoding.UTF8.GetBytes("ROOM-FIRST"));
+
+        NewfarmTestPeer successor = harness.CreatePeer();
+
+        successor.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => successor.ReceivedCredential is not null, NewfarmTestHarness.WaitTimeout, "the successor to join the first room");
+
+        host.Client.SurrenderHosting();
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(200));
+
+        // The room died with the host, which is what sends a peer back to the directory.
+        successor.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => successor.ElectionCount > 0, TimeSpan.FromSeconds(2), "the successor to be elected on the surrender");
+
+        byte[] secondCredential = Encoding.UTF8.GetBytes("ROOM-SECOND");
+
+        successor.Client.PublishCredential(AdapterTag, secondCredential);
+
+        harness.PumpUntil(() => host.ReceivedCredential is not null, NewfarmTestHarness.WaitTimeout, "the peer that gave up hosting to be told where the session went");
+
+        Assert.Equal(secondCredential, host.ReceivedCredential!.Value.Credential);
+    }
+
+    /// <summary>
+    /// A peer that has said it cannot host is passed over when the next election runs, rather than being handed the
+    /// same job again and again.
+    /// </summary>
+    [Fact]
+    public void APeerThatDeclinedIsPassedOverByTheNextElection()
+    {
+        using NewfarmTestHarness harness = new();
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        NewfarmTestPeer decliningClient = harness.CreatePeer();
+
+        AbandonHost(harness, host);
+
+        decliningClient.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => decliningClient.ElectionCount > 0, NewfarmTestHarness.WaitTimeout, "the only client to be elected");
+
+        decliningClient.Client.DeclineElection();
+
+        harness.PumpFor(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(1, decliningClient.ElectionCount);
+
+        // A peer that can host arrives, and gets the job the declining one turned down.
+        NewfarmTestPeer capableClient = harness.CreatePeer();
+
+        capableClient.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => capableClient.ElectionCount > 0, NewfarmTestHarness.WaitTimeout, "the capable client to be elected instead");
+
+        byte[] credential = Encoding.UTF8.GetBytes("ROOM-CAPABLE");
+
+        capableClient.Client.PublishCredential(AdapterTag, credential);
+
+        harness.PumpUntil(() => decliningClient.ReceivedCredential is not null, NewfarmTestHarness.WaitTimeout, "the declining peer to still be told where the session went");
+
+        Assert.Equal(credential, decliningClient.ReceivedCredential!.Value.Credential);
+        Assert.Equal(1, decliningClient.ElectionCount);
+    }
+
+    /// <summary>
     /// Opens a session and returns its identity.
     /// </summary>
     /// <param name="harness">The harness to create the host on.</param>

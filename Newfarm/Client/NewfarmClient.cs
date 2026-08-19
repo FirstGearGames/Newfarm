@@ -53,6 +53,23 @@ public sealed class NewfarmClient : IDisposable
     public delegate void NewfarmElectionAbortedHandler(uint epoch);
 
     /// <summary>
+    /// Raised when peers have reported they cannot reach this host, and newfarm wants it to prove otherwise. The
+    /// peer should publish a credential through <see cref="PublishCredential"/>, creating a fresh room if the one it
+    /// had is gone, or give the session up through <see cref="SurrenderHosting"/> if it can no longer host at all.
+    /// </summary>
+    /// <remarks>
+    /// Saying nothing is an answer too, and the wrong one: after enough unanswered rounds newfarm stands the host
+    /// down and elects a replacement, however healthily this peer is still heartbeating.
+    /// </remarks>
+    public event NewfarmHostingChallengedHandler? HostingChallenged;
+
+    /// <summary>
+    /// Receives a demand that this peer prove it is still hosting.
+    /// </summary>
+    /// <param name="epoch">The epoch the session is being hosted for.</param>
+    public delegate void NewfarmHostingChallengedHandler(uint epoch);
+
+    /// <summary>
     /// Raised when newfarm has handed over the credential the session now lives at.
     /// </summary>
     public event NewfarmCredentialAvailableHandler? CredentialAvailable;
@@ -237,6 +254,39 @@ public sealed class NewfarmClient : IDisposable
     }
 
     /// <summary>
+    /// Gives up hosting while staying in the session, so newfarm elects a replacement at once instead of waiting for
+    /// this peer's heartbeat to lapse.
+    /// </summary>
+    /// <remarks>
+    /// This is what a peer calls when it stops being able to host but is still perfectly online: the player left the
+    /// match, or the game server it was running shut down. Its heartbeats would otherwise keep the session waiting on
+    /// a host that is not hosting anything.
+    /// </remarks>
+    public void SurrenderHosting()
+    {
+        ClearUnconfirmedCredential();
+
+        Mode = NewfarmClientMode.Waiting;
+
+        BeginRequest(NewfarmPacketType.SurrenderHosting);
+    }
+
+    /// <summary>
+    /// Reports that the credential this peer holds does not get it to the host, which asks newfarm to make the host
+    /// prove it is still hosting.
+    /// </summary>
+    /// <remarks>
+    /// Call this when joining the credential has actually been tried and failed. It is the only way newfarm can find
+    /// out that a host is unreachable while its heartbeats keep arriving, since only the peers can tell.
+    /// </remarks>
+    public void ReportCredentialUnreachable()
+    {
+        Mode = NewfarmClientMode.Waiting;
+
+        BeginRequest(NewfarmPacketType.CredentialUnreachable);
+    }
+
+    /// <summary>
     /// Ends the session deliberately, so newfarm forgets it rather than electing a replacement host.
     /// </summary>
     public void CloseSession()
@@ -335,6 +385,10 @@ public sealed class NewfarmClient : IDisposable
 
             case NewfarmPacketType.CredentialAccepted:
                 HandleCredentialAccepted(datagram);
+                break;
+
+            case NewfarmPacketType.ProveHosting:
+                HandleProveHosting(datagram);
                 break;
 
             case NewfarmPacketType.Waiting:
@@ -440,6 +494,21 @@ public sealed class NewfarmClient : IDisposable
         _nextRequestRetryMilliseconds = 0;
 
         CredentialAvailable?.Invoke(new NewfarmCredential(adapterTag, credential, epoch));
+    }
+
+    /// <summary>
+    /// Passes on a demand that this peer prove it is still hosting.
+    /// </summary>
+    /// <param name="datagram">The bytes received.</param>
+    private void HandleProveHosting(ReadOnlySpan<byte> datagram)
+    {
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out Guid sessionId, out uint epoch))
+            return;
+
+        if (sessionId != Identity.SessionId || Mode is not NewfarmClientMode.Hosting)
+            return;
+
+        HostingChallenged?.Invoke(epoch);
     }
 
     /// <summary>

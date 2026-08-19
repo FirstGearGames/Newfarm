@@ -54,6 +54,27 @@ public sealed class NewfarmServerConfig
     public uint HostlessGraceMilliseconds = 120000;
 
     /// <summary>
+    /// How long a challenged host has to publish a credential before that challenge round is closed against it.
+    /// </summary>
+    /// <remarks>
+    /// A heartbeat says a peer's connection works, which is not the same as it still being able to host: its game may
+    /// have wedged, its room may be gone, or its route to the relay may have failed while its route to newfarm did
+    /// not. When peers report they cannot reach the host, newfarm asks the host to prove it by publishing a
+    /// credential, which tests the capability actually in question rather than a proxy for it.
+    /// </remarks>
+    public uint HostChallengeIntervalMilliseconds = 3000;
+
+    /// <summary>
+    /// How many challenge rounds may close with peers still unable to reach the host before newfarm stands that host
+    /// down and elects a replacement, however healthily it is heartbeating.
+    /// </summary>
+    /// <remarks>
+    /// More than one, because a single round can close against a host that was merely slow, and because the peer
+    /// doing the reporting might be the broken one. Repeated rounds are what tell those two apart.
+    /// </remarks>
+    public uint MaximumIneffectiveHostChallenges = 2;
+
+    /// <summary>
     /// How often a waiting peer is told it is still queued, so silence from newfarm is distinguishable from newfarm
     /// being unreachable.
     /// </summary>

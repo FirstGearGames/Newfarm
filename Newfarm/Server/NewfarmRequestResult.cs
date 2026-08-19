@@ -29,4 +29,9 @@ public enum NewfarmRequestResult : byte
     /// The peer is not the one newfarm elected, so it has no standing to publish a credential or decline.
     /// </summary>
     NotElected,
+
+    /// <summary>
+    /// The peer is not the one newfarm believes is hosting, so it has no standing to give the session up.
+    /// </summary>
+    NotHosting,
 }
