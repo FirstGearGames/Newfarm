@@ -89,6 +89,18 @@ internal sealed class NewfarmSession
     public long HostChallengeDeadlineMilliseconds { get; private set; }
 
     /// <summary>
+    /// When the host was last asked to prove it is hosting, in <see cref="NewfarmClock.Milliseconds"/> milliseconds,
+    /// or zero when it has not been asked since it took the session on.
+    /// </summary>
+    public long LastHostChallengeMilliseconds { get; private set; }
+
+    /// <summary>
+    /// The <see cref="AttestationId"/> that stood when the outstanding challenge was sent, which is what answering
+    /// the challenge moves on.
+    /// </summary>
+    public uint ChallengeAttestationId { get; private set; }
+
+    /// <summary>
     /// How many challenge rounds have closed in a row with peers still unable to reach the host.
     /// </summary>
     public uint IneffectiveHostChallengeCount { get; private set; }
@@ -221,6 +233,9 @@ internal sealed class NewfarmSession
         IsHostChallengeOutstanding = false;
         HostChallengeDeadlineMilliseconds = 0;
         IneffectiveHostChallengeCount = 0;
+
+        // Whoever hosts next starts with a clean slate rather than serving out the last host's cooldown.
+        LastHostChallengeMilliseconds = UnchallengedHost;
     }
 
     /// <summary>
@@ -233,6 +248,24 @@ internal sealed class NewfarmSession
     }
 
     /// <summary>
+    /// Returns whether the host may be challenged again yet.
+    /// </summary>
+    /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
+    /// <param name="challengeCooldownMilliseconds">The least time to leave the host alone between challenges.</param>
+    /// <returns><see langword="true"/> when a challenge may be sent.</returns>
+    /// <remarks>
+    /// The cooldown is a property of the session rather than of the peer asking, so however many peers report and
+    /// however often, the host hears about it at most this often.
+    /// </remarks>
+    public bool IsHostChallengeDue(long nowMilliseconds, uint challengeCooldownMilliseconds)
+    {
+        if (LastHostChallengeMilliseconds == UnchallengedHost)
+            return true;
+
+        return nowMilliseconds - LastHostChallengeMilliseconds >= challengeCooldownMilliseconds;
+    }
+
+    /// <summary>
     /// Asks the host to prove it is still hosting, and starts the round it has to answer in.
     /// </summary>
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
@@ -241,24 +274,29 @@ internal sealed class NewfarmSession
     {
         IsHostChallengeOutstanding = true;
         HostChallengeDeadlineMilliseconds = nowMilliseconds + challengeIntervalMilliseconds;
+        LastHostChallengeMilliseconds = nowMilliseconds;
+        ChallengeAttestationId = AttestationId;
     }
 
     /// <summary>
-    /// Closes an outstanding challenge round and reports whether it settled anything.
+    /// Closes an outstanding challenge round and reports whether the host answered it.
     /// </summary>
-    /// <returns><see langword="true"/> when peers still cannot reach the host, so the round achieved nothing.</returns>
+    /// <returns><see langword="true"/> when the host said nothing, so the round counts against it.</returns>
     /// <remarks>
-    /// A host that answered cleared the reports by publishing, since accepting a credential moves
-    /// <see cref="AttestationId"/> on and empties them. Reports left standing therefore mean either that the host
-    /// said nothing, or that what it published left the peers no better off. Both are the same failure from the
-    /// peers' side, and both are counted the same way.
+    /// Answering means publishing, which moves <see cref="AttestationId"/> on, so a round that closes on the
+    /// attestation it opened with is one the host had nothing to say to.
+    /// Silence is the only thing counted here. A host that answers and whose peers still cannot reach it is not, from
+    /// newfarm's side of the wire, distinguishable from peers that cannot reach a room which is perfectly fine, and
+    /// standing a host down on that would hand a working session's fate to whichever peer was worst connected. Newfarm
+    /// has no census of the peers who are playing happily, since they stop talking to it once they have joined, so
+    /// there is nothing to weigh a complaint against.
     /// </remarks>
     public bool CloseHostChallenge()
     {
         IsHostChallengeOutstanding = false;
         HostChallengeDeadlineMilliseconds = 0;
 
-        if (!HasCurrentUnreachableReports)
+        if (AttestationId != ChallengeAttestationId)
         {
             IneffectiveHostChallengeCount = 0;
 
@@ -266,8 +304,6 @@ internal sealed class NewfarmSession
         }
 
         IneffectiveHostChallengeCount++;
-
-        UnreachableReports.Clear();
 
         return true;
     }
@@ -462,6 +498,7 @@ internal sealed class NewfarmSession
         IsHostChallengeOutstanding = false;
         HostChallengeDeadlineMilliseconds = 0;
         IneffectiveHostChallengeCount = 0;
+        LastHostChallengeMilliseconds = UnchallengedHost;
     }
 
     /// <summary>
@@ -487,4 +524,10 @@ internal sealed class NewfarmSession
 
         return nowMilliseconds - HostlessSinceMilliseconds > hostlessGraceMilliseconds;
     }
+
+    /// <summary>
+    /// Sentinel <see cref="LastHostChallengeMilliseconds"/> value: the peer hosting the session has not been
+    /// challenged, so the next challenge is due at once.
+    /// </summary>
+    private const long UnchallengedHost = 0;
 }

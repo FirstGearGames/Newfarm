@@ -157,6 +157,12 @@ public sealed class NewfarmClient : IDisposable
     private uint _unconfirmedEpoch;
 
     /// <summary>
+    /// The earliest this peer will next tell newfarm it cannot reach the host, in
+    /// <see cref="NewfarmClock.Milliseconds"/> milliseconds.
+    /// </summary>
+    private long _nextUnreachableReportMilliseconds;
+
+    /// <summary>
     /// True once <see cref="Dispose"/> has run.
     /// </summary>
     private bool _isDisposed;
@@ -278,9 +284,19 @@ public sealed class NewfarmClient : IDisposable
     /// <remarks>
     /// Call this when joining the credential has actually been tried and failed. It is the only way newfarm can find
     /// out that a host is unreachable while its heartbeats keep arriving, since only the peers can tell.
+    /// Safe to call as often as a join fails: reports made inside
+    /// <see cref="NewfarmClientConfig.UnreachableReportIntervalMilliseconds"/> of the last one are dropped here
+    /// rather than sent.
     /// </remarks>
     public void ReportCredentialUnreachable()
     {
+        long nowMilliseconds = NewfarmClock.Milliseconds;
+
+        if (nowMilliseconds < _nextUnreachableReportMilliseconds)
+            return;
+
+        _nextUnreachableReportMilliseconds = nowMilliseconds + Config.UnreachableReportIntervalMilliseconds;
+
         Mode = NewfarmClientMode.Waiting;
 
         BeginRequest(NewfarmPacketType.CredentialUnreachable);
@@ -540,7 +556,9 @@ public sealed class NewfarmClient : IDisposable
 
         Identity = new NewfarmSessionIdentity(Identity.SessionId, Identity.SessionSecret, epoch);
 
-        if (_outstandingRequest is NewfarmPacketType.AwaitSession)
+        // Waiting is the answer to all three of these, and without clearing them here a report or a surrender would
+        // be repeated at the retry interval for as long as the peer stayed queued.
+        if (_outstandingRequest is NewfarmPacketType.AwaitSession or NewfarmPacketType.CredentialUnreachable or NewfarmPacketType.SurrenderHosting)
         {
             _outstandingRequest = default;
             _nextRequestRetryMilliseconds = 0;

@@ -59,7 +59,8 @@ internal sealed class NewfarmTestHarness : IDisposable
             ElectionDeadlineMilliseconds = 1500,
             CredentialGraceMilliseconds = 3000,
             HostlessGraceMilliseconds = 30000,
-            HostChallengeIntervalMilliseconds = 300,
+            HostChallengeIntervalMilliseconds = 200,
+            HostChallengeCooldownMilliseconds = 1200,
             WaitingKeepAliveIntervalMilliseconds = 150,
             SweepIntervalMilliseconds = 50,
         };
@@ -90,6 +91,7 @@ internal sealed class NewfarmTestHarness : IDisposable
             HostHeartbeatIntervalMilliseconds = 100,
             WaiterHeartbeatIntervalMilliseconds = 100,
             RequestRetryIntervalMilliseconds = 200,
+            UnreachableReportIntervalMilliseconds = 100,
         };
 
         NewfarmTestPeer peer = new(config);

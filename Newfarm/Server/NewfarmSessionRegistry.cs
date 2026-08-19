@@ -322,6 +322,9 @@ internal sealed class NewfarmSessionRegistry
         if (!session.HasCurrentUnreachableReports)
             return;
 
+        if (!session.IsHostChallengeDue(nowMilliseconds, _config.HostChallengeCooldownMilliseconds))
+            return;
+
         session.BeginHostChallenge(nowMilliseconds, _config.HostChallengeIntervalMilliseconds);
 
         notifications.Add(new NewfarmNotification(NewfarmPacketType.ProveHosting, session.HostEndPoint, session));

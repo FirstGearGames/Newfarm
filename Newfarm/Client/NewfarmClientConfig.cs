@@ -35,6 +35,17 @@ public sealed class NewfarmClientConfig
     public uint RequestRetryIntervalMilliseconds = 500;
 
     /// <summary>
+    /// How often this peer will tell newfarm it cannot reach the host. Calls made sooner are dropped.
+    /// </summary>
+    /// <remarks>
+    /// Reporting is meant to be safe to call straight from a failed join, and a failed join can repeat as fast as the
+    /// game retries it. This limit is per peer, and newfarm separately leaves the host alone between challenges
+    /// through <see cref="Newfarm.Server.NewfarmServerConfig.HostChallengeCooldownMilliseconds"/>, so a room full of
+    /// peers cannot add up to a flood either.
+    /// </remarks>
+    public uint UnreachableReportIntervalMilliseconds = 5000;
+
+    /// <summary>
     /// Creates a configuration pointing at the supplied directory.
     /// </summary>
     /// <param name="serverEndPoint">The newfarm directory to talk to.</param>

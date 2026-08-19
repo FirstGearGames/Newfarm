@@ -65,12 +65,27 @@ public sealed class NewfarmServerConfig
     public uint HostChallengeIntervalMilliseconds = 3000;
 
     /// <summary>
-    /// How many challenge rounds may close with peers still unable to reach the host before newfarm stands that host
-    /// down and elects a replacement, however healthily it is heartbeating.
+    /// The least time newfarm leaves a host alone between challenges, however many peers are reporting it
+    /// unreachable and however often each of them reports.
     /// </summary>
     /// <remarks>
-    /// More than one, because a single round can close against a host that was merely slow, and because the peer
-    /// doing the reporting might be the broken one. Repeated rounds are what tell those two apart.
+    /// The cost of a challenge is borne by the host, and the number of peers able to trigger one is the size of the
+    /// session, so without a limit here a room full of peers whose links all dropped at once would each turn into a
+    /// demand on the one machine least able to spare the attention. One challenge per session per cooldown is all
+    /// newfarm ever needs: the answer is the same whoever asked for it.
+    /// Measured from when a challenge was sent, so a value below
+    /// <see cref="HostChallengeIntervalMilliseconds"/> leaves the round length as the real spacing.
+    /// </remarks>
+    public uint HostChallengeCooldownMilliseconds = 10000;
+
+    /// <summary>
+    /// How many challenge rounds may close without the host answering before newfarm stands it down and elects a
+    /// replacement, however healthily it is heartbeating.
+    /// </summary>
+    /// <remarks>
+    /// More than one, because a single round can close against a host that was merely slow. A host that does answer
+    /// keeps the session however many peers are complaining, since newfarm cannot tell a host nobody can reach from a
+    /// peer that can reach nobody, and only one of those two is worth taking a session away over.
     /// </remarks>
     public uint MaximumIneffectiveHostChallenges = 2;
 

@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Text;
 using Newfarm.Client;
 using Newfarm.Wire;
@@ -500,7 +501,7 @@ public sealed class NewfarmDirectoryTests
 
         // The host keeps heartbeating throughout, and never answers a challenge, which is what a wedged game or a
         // host that lost its route to the relay looks like from here.
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < 12; i++)
         {
             strandedClient.Client.ReportCredentialUnreachable();
 
@@ -539,7 +540,7 @@ public sealed class NewfarmDirectoryTests
 
         harness.PumpUntil(() => complainingClient.ReceivedCredential is not null, NewfarmTestHarness.WaitTimeout, "the client to be given the credential");
 
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < 8; i++)
         {
             complainingClient.Client.ReportCredentialUnreachable();
 
@@ -549,6 +550,66 @@ public sealed class NewfarmDirectoryTests
         Assert.True(host.ChallengeCount > 0, "The host was never asked to prove it was hosting.");
         Assert.Equal(0, complainingClient.ElectionCount);
         Assert.Equal(1u, identity.Epoch);
+        Assert.Equal(NewfarmClientMode.Hosting, host.Client.Mode);
+    }
+
+    /// <summary>
+    /// The host is challenged on a schedule of newfarm's choosing, not on one set by however many peers happen to be
+    /// reporting. A whole room's links dropping at once must not turn into a whole room's worth of demands on the one
+    /// machine least able to spare the attention.
+    /// </summary>
+    [Fact]
+    public void ManyPeersReportingDoNotAddUpToManyChallenges()
+    {
+        using NewfarmTestHarness harness = new();
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        byte[] credential = Encoding.UTF8.GetBytes("ROOM-BUSY");
+
+        // The host answers every challenge, so it keeps the session and stays challengeable for the whole test.
+        host.ChallengeAnswerAdapterTag = AdapterTag;
+        host.ChallengeAnswer = credential;
+
+        host.Client.PublishCredential(AdapterTag, credential);
+
+        NewfarmTestPeer[] complainingClients = new NewfarmTestPeer[6];
+
+        for (int i = 0; i < complainingClients.Length; i++)
+        {
+            complainingClients[i] = harness.CreatePeer();
+            complainingClients[i].Client.AwaitSession(identity);
+        }
+
+        harness.PumpUntil(() => AllHaveCredential(complainingClients), NewfarmTestHarness.WaitTimeout, "every client to be given the credential");
+
+        int reportCount = 0;
+
+        long startedTimestamp = Stopwatch.GetTimestamp();
+
+        for (int round = 0; round < 16; round++)
+        {
+            for (int i = 0; i < complainingClients.Length; i++)
+            {
+                complainingClients[i].Client.ReportCredentialUnreachable();
+
+                reportCount++;
+            }
+
+            harness.PumpFor(TimeSpan.FromMilliseconds(150));
+        }
+
+        TimeSpan elapsed = Stopwatch.GetElapsedTime(startedTimestamp);
+
+        // One challenge per cooldown is the ceiling, whatever the peers do. The spare two cover the round in flight
+        // when the window opened and the one that may start as it closes.
+        int permittedChallenges = (int)(elapsed.TotalMilliseconds / harness.Server.Config.HostChallengeCooldownMilliseconds) + 2;
+
+        // Without this the test could pass for the wrong reason, by standing the host down early and so leaving
+        // nobody to challenge.
+        Assert.Equal(0, TotalElections(complainingClients));
+        Assert.True(host.ChallengeCount > 0, "The host was never challenged, so the limit was not what held the count down.");
+        Assert.True(host.ChallengeCount <= permittedChallenges, $"[{reportCount}] reports over [{elapsed.TotalMilliseconds:0}]ms produced [{host.ChallengeCount}] challenges, more than the [{permittedChallenges}] the cooldown allows.");
         Assert.Equal(NewfarmClientMode.Hosting, host.Client.Mode);
     }
 
@@ -663,6 +724,22 @@ public sealed class NewfarmDirectoryTests
         host.IsAbandoned = true;
 
         harness.PumpFor(TimeSpan.FromMilliseconds(harness.Server.Config.HostTimeoutMilliseconds + 200));
+    }
+
+    /// <summary>
+    /// Returns whether every supplied peer has been handed a credential.
+    /// </summary>
+    /// <param name="peers">The peers to check.</param>
+    /// <returns><see langword="true"/> when none of them are still waiting.</returns>
+    private static bool AllHaveCredential(NewfarmTestPeer[] peers)
+    {
+        for (int i = 0; i < peers.Length; i++)
+        {
+            if (peers[i].ReceivedCredential is null)
+                return false;
+        }
+
+        return true;
     }
 
     /// <summary>
