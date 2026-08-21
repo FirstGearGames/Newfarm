@@ -331,6 +331,12 @@ namespace Newfarm.Client
         /// <summary>
         /// Ends the session deliberately, so newfarm forgets it rather than electing a replacement host.
         /// </summary>
+        /// <remarks>
+        /// Only the peer newfarm believes is hosting can do this, and a call from any other peer is ignored. Every
+        /// peer in a session holds the session id, so a close newfarm took anyone's word for would let any one of
+        /// them end the session for everybody. A peer that is leaving rather than shutting the session down wants
+        /// <see cref="SurrenderHosting"/>, or simply to stop polling.
+        /// </remarks>
         public void CloseSession()
         {
             SendSessionEpoch(NewfarmPacketType.CloseSession);

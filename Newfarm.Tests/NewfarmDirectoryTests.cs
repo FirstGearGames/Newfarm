@@ -812,6 +812,51 @@ public sealed class NewfarmDirectoryTests
     }
 
     /// <summary>
+    /// Only the peer hosting a session can close it. The session id reaches every peer in the session, so a close
+    /// newfarm took the sender's word for would let any one of them delete the session for everybody, and a client
+    /// that merely quit would take the whole session down with it instead of leaving.
+    /// </summary>
+    [Fact]
+    public void OnlyTheHostCanCloseASession()
+    {
+        // A host timeout far longer than the test runs for, so the host holds the session throughout and the only
+        // thing that can account for the session going is a close newfarm honoured.
+        using NewfarmTestHarness harness = new(config => config.HostTimeoutMilliseconds = 30000);
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        NewfarmTestPeer waiter = harness.CreatePeer();
+
+        waiter.Client.AwaitSession(identity);
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(300));
+
+        // The waiter quits, naming the epoch that is genuinely current, so its lack of standing is the only thing
+        // left to refuse it on.
+        waiter.Client.CloseSession();
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(400));
+
+        Assert.Equal(1, harness.Server.SessionCount);
+
+        // Not merely still counted but still whole: its host can publish into it and its peers are still told where
+        // it lives.
+        string credential = "ROOM-STILL-THERE";
+
+        host.Client.PublishCredential(AdapterTag, credential);
+        waiter.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => waiter.ReceivedCredential is not null, NewfarmTestHarness.WaitTimeout, "the waiter to be served by the session it failed to close");
+
+        Assert.Equal(credential, waiter.ReceivedCredential!.Value.Credential);
+
+        // The peer that is actually hosting is obeyed.
+        host.Client.CloseSession();
+
+        harness.PumpUntil(() => harness.Server.SessionCount == 0, NewfarmTestHarness.WaitTimeout, "the host's own close to be honoured");
+    }
+
+    /// <summary>
     /// A peer that has said it cannot host is passed over when the next election runs, rather than being handed the
     /// same job again and again.
     /// </summary>

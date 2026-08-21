@@ -386,13 +386,20 @@ public sealed class NewfarmServer : IDisposable
     /// <param name="senderEndPoint">The peer that sent them.</param>
     private void HandleCloseSession(ReadOnlySpan<byte> datagram, IPEndPoint senderEndPoint)
     {
-        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint _))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
             return;
 
         if (!TryResolveOrRefuse(sessionId, senderEndPoint, out NewfarmSession? session))
             return;
 
-        _registry.RemoveSession(session!);
+        NewfarmRequestResult closeResult = _registry.CloseSession(session!, senderEndPoint, epoch);
+
+        if (closeResult is not NewfarmRequestResult.Accepted)
+        {
+            Log($"Newfarm refused to close session [{sessionId:x16}] for [{senderEndPoint}]: [{closeResult}].");
+
+            return;
+        }
 
         Log($"Newfarm closed session [{sessionId:x16}] at the request of [{senderEndPoint}].");
     }

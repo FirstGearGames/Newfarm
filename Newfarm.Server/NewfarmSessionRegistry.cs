@@ -232,12 +232,29 @@ internal sealed class NewfarmSessionRegistry
     }
 
     /// <summary>
-    /// Removes a session outright, which a host does when it shuts a session down deliberately.
+    /// Removes a session outright, which a host does when it shuts a session down deliberately rather than handing
+    /// it on.
     /// </summary>
-    /// <param name="session">The session to remove.</param>
-    public void RemoveSession(NewfarmSession session)
+    /// <param name="session">The session being closed.</param>
+    /// <param name="hostEndPoint">The peer asking for the session to be forgotten.</param>
+    /// <param name="epoch">The epoch the peer believes it is hosting.</param>
+    /// <returns>Why the close was refused, or <see cref="NewfarmRequestResult.Accepted"/>.</returns>
+    /// <remarks>
+    /// Checked as strictly as <see cref="SurrenderHosting"/>, and for a sharper reason: the session id reaches every
+    /// peer in the session, so a close that took the sender's word for it would let any one of them delete the
+    /// session for everybody, and a client that merely quit would take the whole session down instead of leaving it.
+    /// </remarks>
+    public NewfarmRequestResult CloseSession(NewfarmSession session, IPEndPoint hostEndPoint, uint epoch)
     {
+        if (epoch != session.Epoch)
+            return NewfarmRequestResult.StaleEpoch;
+
+        if (session.HostEndPoint is null || !session.HostEndPoint.Equals(hostEndPoint))
+            return NewfarmRequestResult.NotHosting;
+
         _sessionsById.Remove(session.SessionId);
+
+        return NewfarmRequestResult.Accepted;
     }
 
     /// <summary>
