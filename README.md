@@ -85,6 +85,8 @@ The shape to take from this: a session in the steady state is one small object, 
 
 The client is its own project, `Newfarm.Client`, built for `netstandard2.1` and held to C# 9 so Unity can compile it directly as source. That is how the Nucleus engine's Unity integration consumes it: the project folder is junctioned into the Unity project under `Assets\Nucleus\Integrations\Newfarm Client` and the editor builds it as its own assembly, no DLL involved. It references nothing beyond the core BCL and holds no runtime reflection, so IL2CPP has nothing to strip out from under it, and the directory ships separately in `Newfarm.Server`, so a game carrying the client carries no server code.
 
+This repository holds only the client and the directory. What a game does with them, being elected, adopting the world it kept and finding where the session moved to, is engine work: for Nucleus that is `Nucleus.Integrations.Newfarm`, which junctions in beside this one and drives whatever carries the session through an `ISessionHost` of its own. Newfarm still knows nothing about any engine, any relay, or any credential it hands out.
+
 What has been checked: the Unity editor compiles it from source, and the assemblies that consume it resolve against it. What has **not** been done: an IL2CPP build has never been run on a device. And `System.Net.Sockets` is not available on WebGL, so the client cannot run there as it stands.
 
 ## Layout
@@ -96,4 +98,4 @@ What has been checked: the Unity editor compiles it from source, and the assembl
 | `Newfarm.Host` | The directory as a standalone console service. |
 | `Newfarm.Tests` | End-to-end tests: a real server on a loopback port, real clients, real datagrams. |
 
-Migration against a real relay is tested separately, in the Blitz Relay repository, which drives this library through a live relay while hosts crash, quit and wedge.
+Migration is tested twice over, and neither suite lives here. `Nucleus.Tests` drives the coordinator against a real directory over a real socket with the service faked, which is fast and covers every branch; the Blitz Relay repository drives the same coordinator through a live relay while hosts crash, quit and wedge.
