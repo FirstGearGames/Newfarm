@@ -2,16 +2,20 @@
 
     <PropertyGroup>
         <TargetFrameworks>netstandard2.1;net8.0</TargetFrameworks>
-        <LangVersion>12.0</LangVersion>
+        <!-- C# 9 because this folder is consumed as source by Unity, junctioned into the integration project. -->
+        <LangVersion>9</LangVersion>
         <Nullable>enable</Nullable>
-        <AssemblyName>Newfarm</AssemblyName>
+        <AssemblyName>Newfarm.Client</AssemblyName>
         <RootNamespace>Newfarm</RootNamespace>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
-        <Description>Newfarm - out-of-band session directory for host migration</Description>
+        <Description>Newfarm client - talks to an out-of-band session directory for host migration</Description>
         <Version>0.1.0</Version>
     </PropertyGroup>
 
     <ItemGroup>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+            <_Parameter1>Newfarm.Server</_Parameter1>
+        </AssemblyAttribute>
         <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
             <_Parameter1>Newfarm.Tests</_Parameter1>
         </AssemblyAttribute>

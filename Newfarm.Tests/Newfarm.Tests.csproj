@@ -16,7 +16,8 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\Newfarm\Newfarm.csproj" />
+        <ProjectReference Include="..\Newfarm.Client\Newfarm.Client.csproj" />
+        <ProjectReference Include="..\Newfarm.Server\Newfarm.Server.csproj" />
     </ItemGroup>
 
     <ItemGroup>

@@ -83,18 +83,16 @@ The shape to take from this: the sweep is one pass over every session on the sam
 
 ## Unity
 
-The library is built for `netstandard2.1` so a Unity project can drop the assembly in and use the client directly. What has been checked: the compiled assembly references exactly one thing, `netstandard 2.1`, and touches nothing outside the core BCL namespaces Unity's profile already provides. There is no runtime reflection anywhere in it, so IL2CPP has nothing to strip out from under it.
+The client is its own project, `Newfarm.Client`, built for `netstandard2.1` and held to C# 9 so Unity can compile it directly as source. That is how the Nucleus engine's Unity integration consumes it: the project folder is junctioned into the Unity project under `Assets\Nucleus\Integrations\Newfarm Client` and the editor builds it as its own assembly, no DLL involved. It references nothing beyond the core BCL and holds no runtime reflection, so IL2CPP has nothing to strip out from under it, and the directory ships separately in `Newfarm.Server`, so a game carrying the client carries no server code.
 
-What has **not** been done: it has never been dropped into a Unity project, built through IL2CPP, or run on a device. Two things to know before that happens:
-
-- `System.Net.Sockets` is not available on WebGL, so the client cannot run there as it stands.
-- The client and the directory ship in one assembly. A game that only ever uses the client still carries the server code, which is small but not nothing.
+What has been checked: the Unity editor compiles it from source, and the assemblies that consume it resolve against it. What has **not** been done: an IL2CPP build has never been run on a device. And `System.Net.Sockets` is not available on WebGL, so the client cannot run there as it stands.
 
 ## Layout
 
 | Project | What it is |
 |---|---|
-| `Newfarm` | The library: server, client, wire format. `netstandard2.1` and `net8.0`, so Unity can consume the client. |
+| `Newfarm.Client` | The client and the wire format. `netstandard2.1` and `net8.0`, C# 9 so Unity can compile it as source. |
+| `Newfarm.Server` | The directory itself: sessions, elections, challenges, limits. |
 | `Newfarm.Host` | The directory as a standalone console service. |
 | `Newfarm.Tests` | End-to-end tests: a real server on a loopback port, real clients, real datagrams. |
 

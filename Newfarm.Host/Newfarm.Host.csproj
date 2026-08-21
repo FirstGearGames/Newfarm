@@ -10,7 +10,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\Newfarm\Newfarm.csproj" />
+        <ProjectReference Include="..\Newfarm.Server\Newfarm.Server.csproj" />
     </ItemGroup>
 
 </Project>

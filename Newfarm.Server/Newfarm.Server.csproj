@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFrameworks>netstandard2.1;net8.0</TargetFrameworks>
+        <LangVersion>12.0</LangVersion>
+        <Nullable>enable</Nullable>
+        <AssemblyName>Newfarm.Server</AssemblyName>
+        <RootNamespace>Newfarm.Server</RootNamespace>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
+        <Description>Newfarm server - the out-of-band session directory for host migration</Description>
+        <Version>0.1.0</Version>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+            <_Parameter1>Newfarm.Tests</_Parameter1>
+        </AssemblyAttribute>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Newfarm.Client\Newfarm.Client.csproj" />
+    </ItemGroup>
+
+</Project>
