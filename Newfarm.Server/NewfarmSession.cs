@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Net;
 
@@ -49,8 +49,8 @@ internal sealed class NewfarmSession
     /// <see cref="NewfarmClock.Milliseconds"/> milliseconds.
     /// </summary>
     /// <remarks>
-    /// Held apart from <see cref="WaiterHeartbeats"/> rather than folded into it, because an elected peer is out of
-    /// the waiting set for the duration of its election and that dictionary is the record of who is in it.
+    /// Held apart from the waiting set's own heartbeats rather than folded into them, because an elected peer is out
+    /// of the waiting set for the duration of its election and that set is the record of who is in it.
     /// </remarks>
     public long LastElectedHeartbeatMilliseconds { get; private set; }
 
@@ -65,12 +65,6 @@ internal sealed class NewfarmSession
     /// can be told apart from a report of the one before it.
     /// </summary>
     public uint AttestationId { get; private set; }
-
-    /// <summary>
-    /// The peers that have reported being unable to reach the host, each against the
-    /// <see cref="AttestationId"/> that was current when it reported.
-    /// </summary>
-    public Dictionary<IPEndPoint, uint> UnreachableReports { get; } = [];
 
     /// <summary>
     /// True while the host has been asked to prove it is still hosting and the round has not yet closed.
@@ -100,12 +94,6 @@ internal sealed class NewfarmSession
     public uint IneffectiveHostChallengeCount { get; private set; }
 
     /// <summary>
-    /// The peers that have said they cannot host this session, which are passed over when a replacement is elected
-    /// but still receive the credential of whoever does host it.
-    /// </summary>
-    public HashSet<IPEndPoint> DeclinedEndPoints { get; } = [];
-
-    /// <summary>
     /// Returns whether any peer says it cannot reach the host as things currently stand, rather than as they stood
     /// before the newest credential was published.
     /// </summary>
@@ -113,7 +101,10 @@ internal sealed class NewfarmSession
     {
         get
         {
-            foreach (KeyValuePair<IPEndPoint, uint> report in UnreachableReports)
+            if (_unreachableReports is null)
+                return false;
+
+            foreach (KeyValuePair<IPEndPoint, uint> report in _unreachableReports)
             {
                 if (report.Value == AttestationId)
                     return true;
@@ -146,24 +137,41 @@ internal sealed class NewfarmSession
     public bool HasCredential => Credential is not null;
 
     /// <summary>
-    /// Peers waiting to be elected or to be handed the credential, each with the timestamp of its last heartbeat in
-    /// <see cref="NewfarmClock.Milliseconds"/> milliseconds.
+    /// The number of peers waiting to be elected or to be handed the credential.
+    /// </summary>
+    public int WaiterCount => _waiters is null ? 0 : _waiters.Count;
+
+    /// <summary>
+    /// The peers that have reported being unable to reach the host, each against the
+    /// <see cref="AttestationId"/> that was current when it reported.
     /// </summary>
     /// <remarks>
-    /// Insertion order decides election order, which is what makes the first peer to arrive the one that hosts, so
-    /// this is a list of endpoints alongside a lookup rather than a dictionary alone.
+    /// Null between uses rather than emptied, because a healthy hosted session never has any: at scale, an empty
+    /// dictionary held by every session costs more memory than the sessions themselves.
     /// </remarks>
-    public List<IPEndPoint> WaiterOrder { get; } = [];
+    private Dictionary<IPEndPoint, uint>? _unreachableReports;
 
     /// <summary>
-    /// The last heartbeat seen from each waiting peer, keyed by endpoint.
+    /// The peers that have said they cannot host this session, which are passed over when a replacement is elected
+    /// but still receive the credential of whoever does host it.
     /// </summary>
-    public Dictionary<IPEndPoint, long> WaiterHeartbeats { get; } = [];
+    /// <remarks>
+    /// Null between uses rather than emptied, for the same reason as <see cref="_unreachableReports"/>. Every
+    /// declined peer is also a waiter, so removing a waiter removes its declined mark with it.
+    /// </remarks>
+    private HashSet<IPEndPoint>? _declinedEndPoints;
 
     /// <summary>
-    /// When each waiting peer was last told it is still queued, keyed by endpoint.
+    /// Peers waiting to be elected or to be handed the credential, in arrival order, each carrying its own heartbeat
+    /// and keep-alive timestamps.
     /// </summary>
-    public Dictionary<IPEndPoint, long> WaiterKeepAlives { get; } = [];
+    /// <remarks>
+    /// Insertion order decides election order, which is what makes the first peer to arrive the one that hosts. One
+    /// ordered list rather than a list beside two dictionaries, because waiter counts are small and bounded, so a
+    /// linear scan costs less than three collections a session. Null between uses rather than emptied, for the same
+    /// reason as <see cref="_unreachableReports"/>.
+    /// </remarks>
+    private List<Waiter>? _waiters;
 
     /// <summary>
     /// Creates a session with a fresh identity.
@@ -219,8 +227,8 @@ internal sealed class NewfarmSession
         HostEndPoint = null;
         HostlessSinceMilliseconds = nowMilliseconds;
 
-        UnreachableReports.Clear();
-        DeclinedEndPoints.Clear();
+        _unreachableReports = null;
+        _declinedEndPoints = null;
 
         IsHostChallengeOutstanding = false;
         HostChallengeDeadlineMilliseconds = 0;
@@ -236,7 +244,8 @@ internal sealed class NewfarmSession
     /// <param name="reporterEndPoint">The peer that cannot reach the host.</param>
     public void RecordCredentialUnreachable(IPEndPoint reporterEndPoint)
     {
-        UnreachableReports[reporterEndPoint] = AttestationId;
+        _unreachableReports ??= [];
+        _unreachableReports[reporterEndPoint] = AttestationId;
     }
 
     /// <summary>
@@ -306,21 +315,52 @@ internal sealed class NewfarmSession
     /// <param name="decliningEndPoint">The peer that cannot host.</param>
     public void RecordDeclined(IPEndPoint decliningEndPoint)
     {
-        DeclinedEndPoints.Add(decliningEndPoint);
+        _declinedEndPoints ??= [];
+        _declinedEndPoints.Add(decliningEndPoint);
     }
 
     /// <summary>
-    /// Adds a peer to the waiting set, or refreshes it when already present.
+    /// Returns whether a peer has said it cannot host, so an election passes over it.
+    /// </summary>
+    /// <param name="waiterEndPoint">The peer to check.</param>
+    /// <returns><see langword="true"/> when the peer has declined to host.</returns>
+    public bool IsDeclined(IPEndPoint waiterEndPoint) => _declinedEndPoints is not null && _declinedEndPoints.Contains(waiterEndPoint);
+
+    /// <summary>
+    /// Adds a peer to the waiting set, or refreshes its heartbeat when already present.
     /// </summary>
     /// <param name="waiterEndPoint">The waiting peer.</param>
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     public void AddWaiter(IPEndPoint waiterEndPoint, long nowMilliseconds)
     {
-        if (!WaiterHeartbeats.ContainsKey(waiterEndPoint))
-            WaiterOrder.Add(waiterEndPoint);
+        int waiterIndex = FindWaiterIndex(waiterEndPoint);
 
-        WaiterHeartbeats[waiterEndPoint] = nowMilliseconds;
+        if (waiterIndex is not UnsetWaiterIndex)
+        {
+            Waiter waiter = _waiters![waiterIndex];
+            waiter.LastHeartbeatMilliseconds = nowMilliseconds;
+            _waiters[waiterIndex] = waiter;
+
+            return;
+        }
+
+        _waiters ??= [];
+        _waiters.Add(new Waiter(waiterEndPoint, nowMilliseconds));
     }
+
+    /// <summary>
+    /// Returns whether a peer is in the waiting set.
+    /// </summary>
+    /// <param name="waiterEndPoint">The peer to look for.</param>
+    /// <returns><see langword="true"/> when the peer is waiting.</returns>
+    public bool HasWaiter(IPEndPoint waiterEndPoint) => FindWaiterIndex(waiterEndPoint) is not UnsetWaiterIndex;
+
+    /// <summary>
+    /// Returns the endpoint of the waiter at a position in arrival order.
+    /// </summary>
+    /// <param name="waiterIndex">The waiter's position, below <see cref="WaiterCount"/>.</param>
+    /// <returns>The waiting peer at that position.</returns>
+    public IPEndPoint GetWaiterEndPoint(int waiterIndex) => _waiters![waiterIndex].EndPoint;
 
     /// <summary>
     /// Records a heartbeat from a waiting peer.
@@ -330,13 +370,26 @@ internal sealed class NewfarmSession
     /// <returns><see langword="true"/> when the peer was in the waiting set.</returns>
     public bool RecordWaiterHeartbeat(IPEndPoint waiterEndPoint, long nowMilliseconds)
     {
-        if (!WaiterHeartbeats.ContainsKey(waiterEndPoint))
+        int waiterIndex = FindWaiterIndex(waiterEndPoint);
+
+        if (waiterIndex is UnsetWaiterIndex)
             return false;
 
-        WaiterHeartbeats[waiterEndPoint] = nowMilliseconds;
+        Waiter waiter = _waiters![waiterIndex];
+        waiter.LastHeartbeatMilliseconds = nowMilliseconds;
+        _waiters[waiterIndex] = waiter;
 
         return true;
     }
+
+    /// <summary>
+    /// Returns whether a waiting peer has stopped heartbeating for longer than the configured timeout.
+    /// </summary>
+    /// <param name="waiterIndex">The waiter's position, below <see cref="WaiterCount"/>.</param>
+    /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
+    /// <param name="waiterTimeoutMilliseconds">How long a waiter may go unheard before it is treated as gone.</param>
+    /// <returns><see langword="true"/> when the waiter is considered gone.</returns>
+    public bool IsWaiterLapsed(int waiterIndex, long nowMilliseconds, uint waiterTimeoutMilliseconds) => nowMilliseconds - _waiters![waiterIndex].LastHeartbeatMilliseconds > waiterTimeoutMilliseconds;
 
     /// <summary>
     /// Removes a peer from the waiting set.
@@ -344,10 +397,32 @@ internal sealed class NewfarmSession
     /// <param name="waiterEndPoint">The peer to remove.</param>
     public void RemoveWaiter(IPEndPoint waiterEndPoint)
     {
-        WaiterOrder.Remove(waiterEndPoint);
-        WaiterHeartbeats.Remove(waiterEndPoint);
-        WaiterKeepAlives.Remove(waiterEndPoint);
-        DeclinedEndPoints.Remove(waiterEndPoint);
+        int waiterIndex = FindWaiterIndex(waiterEndPoint);
+
+        if (waiterIndex is not UnsetWaiterIndex)
+            RemoveWaiterAt(waiterIndex);
+    }
+
+    /// <summary>
+    /// Removes the waiter at a position in arrival order.
+    /// </summary>
+    /// <param name="waiterIndex">The waiter's position, below <see cref="WaiterCount"/>.</param>
+    public void RemoveWaiterAt(int waiterIndex)
+    {
+        IPEndPoint waiterEndPoint = _waiters![waiterIndex].EndPoint;
+
+        _waiters.RemoveAt(waiterIndex);
+
+        if (_waiters.Count == 0)
+            _waiters = null;
+
+        if (_declinedEndPoints is not null)
+        {
+            _declinedEndPoints.Remove(waiterEndPoint);
+
+            if (_declinedEndPoints.Count == 0)
+                _declinedEndPoints = null;
+        }
     }
 
     /// <summary>
@@ -357,19 +432,36 @@ internal sealed class NewfarmSession
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     public void RecordWaiterKeepAlive(IPEndPoint waiterEndPoint, long nowMilliseconds)
     {
-        WaiterKeepAlives[waiterEndPoint] = nowMilliseconds;
+        int waiterIndex = FindWaiterIndex(waiterEndPoint);
+
+        if (waiterIndex is not UnsetWaiterIndex)
+            RecordWaiterKeepAlive(waiterIndex, nowMilliseconds);
+    }
+
+    /// <summary>
+    /// Records that the waiter at a position in arrival order has been told it is still queued.
+    /// </summary>
+    /// <param name="waiterIndex">The waiter's position, below <see cref="WaiterCount"/>.</param>
+    /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
+    public void RecordWaiterKeepAlive(int waiterIndex, long nowMilliseconds)
+    {
+        Waiter waiter = _waiters![waiterIndex];
+        waiter.LastKeepAliveMilliseconds = nowMilliseconds;
+        _waiters[waiterIndex] = waiter;
     }
 
     /// <summary>
     /// Returns whether a waiting peer is due to be told it is still queued.
     /// </summary>
-    /// <param name="waiterEndPoint">The waiting peer.</param>
+    /// <param name="waiterIndex">The waiter's position, below <see cref="WaiterCount"/>.</param>
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     /// <param name="keepAliveIntervalMilliseconds">How often a waiting peer should hear from newfarm.</param>
     /// <returns><see langword="true"/> when a keep-alive is due.</returns>
-    public bool IsWaiterKeepAliveDue(IPEndPoint waiterEndPoint, long nowMilliseconds, uint keepAliveIntervalMilliseconds)
+    public bool IsWaiterKeepAliveDue(int waiterIndex, long nowMilliseconds, uint keepAliveIntervalMilliseconds)
     {
-        if (!WaiterKeepAlives.TryGetValue(waiterEndPoint, out long lastKeepAliveMilliseconds))
+        long lastKeepAliveMilliseconds = _waiters![waiterIndex].LastKeepAliveMilliseconds;
+
+        if (lastKeepAliveMilliseconds is UnsetKeepAliveMilliseconds)
             return true;
 
         return nowMilliseconds - lastKeepAliveMilliseconds >= keepAliveIntervalMilliseconds;
@@ -458,8 +550,8 @@ internal sealed class NewfarmSession
 
         AttestationId++;
 
-        UnreachableReports.Clear();
-        DeclinedEndPoints.Clear();
+        _unreachableReports = null;
+        _declinedEndPoints = null;
     }
 
     /// <summary>
@@ -485,7 +577,7 @@ internal sealed class NewfarmSession
         CredentialPublishedMilliseconds = 0;
         AttestationId = 0;
 
-        UnreachableReports.Clear();
+        _unreachableReports = null;
 
         IsHostChallengeOutstanding = false;
         HostChallengeDeadlineMilliseconds = 0;
@@ -508,7 +600,7 @@ internal sealed class NewfarmSession
     /// </remarks>
     public bool IsExpired(long nowMilliseconds, uint credentialGraceMilliseconds, uint hostlessGraceMilliseconds)
     {
-        if (HostEndPoint is not null || ElectedEndPoint is not null || WaiterOrder.Count > 0)
+        if (HostEndPoint is not null || ElectedEndPoint is not null || _waiters is not null)
             return false;
 
         if (HasCredential && nowMilliseconds - CredentialPublishedMilliseconds <= credentialGraceMilliseconds)
@@ -518,8 +610,72 @@ internal sealed class NewfarmSession
     }
 
     /// <summary>
+    /// Returns the position of a peer in the waiting set, or <see cref="UnsetWaiterIndex"/> when it is not there.
+    /// </summary>
+    /// <param name="waiterEndPoint">The peer to look for.</param>
+    /// <returns>The peer's position in arrival order, or <see cref="UnsetWaiterIndex"/>.</returns>
+    private int FindWaiterIndex(IPEndPoint waiterEndPoint)
+    {
+        if (_waiters is null)
+            return UnsetWaiterIndex;
+
+        for (int i = 0; i < _waiters.Count; i++)
+        {
+            if (_waiters[i].EndPoint.Equals(waiterEndPoint))
+                return i;
+        }
+
+        return UnsetWaiterIndex;
+    }
+
+    /// <summary>
     /// Sentinel <see cref="LastHostChallengeMilliseconds"/> value: the peer hosting the session has not been
     /// challenged, so the next challenge is due at once.
     /// </summary>
     private const long UnchallengedHost = 0;
+
+    /// <summary>
+    /// Sentinel <see cref="Waiter.LastKeepAliveMilliseconds"/> value: the peer has not been told it is queued yet,
+    /// so its first keep-alive is due at once.
+    /// </summary>
+    private const long UnsetKeepAliveMilliseconds = -1;
+
+    /// <summary>
+    /// Sentinel position returned by <see cref="FindWaiterIndex"/> when the peer is not in the waiting set.
+    /// </summary>
+    private const int UnsetWaiterIndex = -1;
+
+    /// <summary>
+    /// One waiting peer: who it is, when it last heartbeated, and when it was last told it is still queued.
+    /// </summary>
+    private struct Waiter
+    {
+        /// <summary>
+        /// The waiting peer.
+        /// </summary>
+        public IPEndPoint EndPoint;
+
+        /// <summary>
+        /// Timestamp of the peer's last heartbeat, in <see cref="NewfarmClock.Milliseconds"/> milliseconds.
+        /// </summary>
+        public long LastHeartbeatMilliseconds;
+
+        /// <summary>
+        /// When the peer was last told it is still queued, in <see cref="NewfarmClock.Milliseconds"/> milliseconds,
+        /// or <see cref="UnsetKeepAliveMilliseconds"/> when it has not been told since it joined the waiting set.
+        /// </summary>
+        public long LastKeepAliveMilliseconds;
+
+        /// <summary>
+        /// Creates a waiter that has just heartbeated and has not yet been told it is queued.
+        /// </summary>
+        /// <param name="endPoint">The waiting peer.</param>
+        /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
+        public Waiter(IPEndPoint endPoint, long nowMilliseconds)
+        {
+            EndPoint = endPoint;
+            LastHeartbeatMilliseconds = nowMilliseconds;
+            LastKeepAliveMilliseconds = UnsetKeepAliveMilliseconds;
+        }
+    }
 }

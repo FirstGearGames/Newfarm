@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Security.Cryptography;
@@ -97,7 +97,7 @@ internal sealed class NewfarmSessionRegistry
     {
         // Peers already in the queue are always let through, so a full session still keeps the ones it has informed
         // and only turns away arrivals it has no room to inform.
-        if (session.WaiterOrder.Count >= _config.MaximumWaitersPerSession && !session.WaiterHeartbeats.ContainsKey(waiterEndPoint))
+        if (session.WaiterCount >= _config.MaximumWaitersPerSession && !session.HasWaiter(waiterEndPoint))
             return NewfarmWaitOutcome.SessionFull;
 
         session.AddWaiter(waiterEndPoint, nowMilliseconds);
@@ -144,8 +144,10 @@ internal sealed class NewfarmSessionRegistry
 
         session.AcceptCredential(publisherEndPoint, adapterTag, credential, nowMilliseconds);
 
-        for (int i = 0; i < session.WaiterOrder.Count; i++)
-            notifications.Add(new NewfarmNotification(NewfarmPacketType.CredentialAvailable, session.WaiterOrder[i], session));
+        int waiterCount = session.WaiterCount;
+
+        for (int i = 0; i < waiterCount; i++)
+            notifications.Add(new NewfarmNotification(NewfarmPacketType.CredentialAvailable, session.GetWaiterEndPoint(i), session));
 
         return NewfarmRequestResult.Accepted;
     }
@@ -345,13 +347,16 @@ internal sealed class NewfarmSessionRegistry
     private void TryElectNextWaiter(NewfarmSession session, long nowMilliseconds, List<NewfarmNotification> notifications)
     {
         IPEndPoint? electedEndPoint = null;
+        int waiterCount = session.WaiterCount;
 
-        for (int i = 0; i < session.WaiterOrder.Count; i++)
+        for (int i = 0; i < waiterCount; i++)
         {
-            if (session.DeclinedEndPoints.Contains(session.WaiterOrder[i]))
+            IPEndPoint waiterEndPoint = session.GetWaiterEndPoint(i);
+
+            if (session.IsDeclined(waiterEndPoint))
                 continue;
 
-            electedEndPoint = session.WaiterOrder[i];
+            electedEndPoint = waiterEndPoint;
 
             break;
         }
@@ -403,27 +408,14 @@ internal sealed class NewfarmSessionRegistry
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     private void RemoveLapsedWaiters(NewfarmSession session, long nowMilliseconds)
     {
-        List<IPEndPoint>? lapsedEndPoints = null;
+        uint waiterTimeoutMilliseconds = _config.WaiterTimeoutMilliseconds;
 
-        for (int i = 0; i < session.WaiterOrder.Count; i++)
+        // Walked backwards so removal never skips the entry that slides into the removed one's place.
+        for (int i = session.WaiterCount - 1; i >= 0; i--)
         {
-            IPEndPoint waiterEndPoint = session.WaiterOrder[i];
-
-            if (!session.WaiterHeartbeats.TryGetValue(waiterEndPoint, out long lastHeartbeatMilliseconds))
-                continue;
-
-            if (nowMilliseconds - lastHeartbeatMilliseconds <= _config.WaiterTimeoutMilliseconds)
-                continue;
-
-            lapsedEndPoints ??= [];
-            lapsedEndPoints.Add(waiterEndPoint);
+            if (session.IsWaiterLapsed(i, nowMilliseconds, waiterTimeoutMilliseconds))
+                session.RemoveWaiterAt(i);
         }
-
-        if (lapsedEndPoints is null)
-            return;
-
-        for (int i = 0; i < lapsedEndPoints.Count; i++)
-            session.RemoveWaiter(lapsedEndPoints[i]);
     }
 
     /// <summary>
@@ -434,16 +426,17 @@ internal sealed class NewfarmSessionRegistry
     /// <param name="notifications">Receives a keep-alive per due peer.</param>
     private void AddDueWaiterKeepAlives(NewfarmSession session, long nowMilliseconds, List<NewfarmNotification> notifications)
     {
-        for (int i = 0; i < session.WaiterOrder.Count; i++)
-        {
-            IPEndPoint waiterEndPoint = session.WaiterOrder[i];
+        uint keepAliveIntervalMilliseconds = _config.WaitingKeepAliveIntervalMilliseconds;
+        int waiterCount = session.WaiterCount;
 
-            if (!session.IsWaiterKeepAliveDue(waiterEndPoint, nowMilliseconds, _config.WaitingKeepAliveIntervalMilliseconds))
+        for (int i = 0; i < waiterCount; i++)
+        {
+            if (!session.IsWaiterKeepAliveDue(i, nowMilliseconds, keepAliveIntervalMilliseconds))
                 continue;
 
-            session.RecordWaiterKeepAlive(waiterEndPoint, nowMilliseconds);
+            session.RecordWaiterKeepAlive(i, nowMilliseconds);
 
-            notifications.Add(new NewfarmNotification(NewfarmPacketType.Waiting, waiterEndPoint, session));
+            notifications.Add(new NewfarmNotification(NewfarmPacketType.Waiting, session.GetWaiterEndPoint(i), session));
         }
     }
 

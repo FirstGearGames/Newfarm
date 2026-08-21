@@ -72,14 +72,14 @@ Measured on one machine, `NEWFARM_SCALE=1 NEWFARM_SCALE_SESSIONS=<n> dotnet test
 
 | Sessions held | Memory | Round trip median | 99th | Worst |
 |---|---|---|---|---|
-| 10,000 | 2.7 MB | 0.10 ms | 0.16 ms | 0.54 ms |
-| 100,000 | 65 MB | 0.10 ms | 0.17 ms | 0.55 ms |
-| 250,000 | 160 MB | 0.10 ms | 0.83 ms | 1.24 ms |
-| 1,000,000 | 555 MB | 0.05 ms | 26.5 ms | 42.4 ms |
+| 10,000 | 2.8 MB | 0.12 ms | 0.25 ms | 0.81 ms |
+| 100,000 | 31 MB | 0.12 ms | 0.21 ms | 0.67 ms |
+| 250,000 | 75 MB | 0.11 ms | 0.20 ms | 1.21 ms |
+| 1,000,000 | 219 MB | 0.05 ms | 0.58 ms | 0.97 ms |
 
 Sessions were opened at roughly 45,000 a second throughout. A separate run held 20,000 sessions under 540,000 heartbeats over 30 seconds, at 17,500 a second, and lost none of them.
 
-The shape to take from this: the sweep is one pass over every session on the same thread that answers peers, so its cost lands in the tail rather than the median. Up to a few hundred thousand sessions it does not show at all. At a million it costs tens of milliseconds a sweep, which is still inside a 250 ms sweep interval but is plainly the beginning of the end. A deployment expecting that many wants either a longer `--sweep-interval-ms` or a second directory.
+The shape to take from this: a session in the steady state is one small object, a couple of hundred bytes. The collections a migration needs, the waiting set and the reports against a host, are allocated only while one is under way and dropped when it ends, so a directory full of healthy sessions pays for none of them. That is also what keeps the sweep flat: it walks a million sessions without leaving them for side lookups, and the worst answer a peer waited on while it did was under a millisecond. The loop is still one thread, so the ceiling is how fast it can answer, not how much it can hold.
 
 ## Unity
 
