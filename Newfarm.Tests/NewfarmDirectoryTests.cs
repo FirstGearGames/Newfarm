@@ -261,6 +261,32 @@ public sealed class NewfarmDirectoryTests
     }
 
     /// <summary>
+    /// A refusal is answered once, not at the heartbeat interval forever: it ends the pursuit it refuses, so the client goes idle
+    /// and stops addressing the session newfarm said it does not hold.
+    /// </summary>
+    /// <remarks>Without the idle transition the waiter's heartbeats each earn another refusal, and a peer that asked one bad question is told the same answer every second until something else stops it.</remarks>
+    [Fact]
+    public void ARefusedPeerStopsAskingAndGoesIdle()
+    {
+        using NewfarmTestHarness harness = new();
+
+        NewfarmTestPeer peer = harness.CreatePeer();
+
+        peer.Client.AwaitSession(new NewfarmSessionIdentity(0xDEADBEEFCAFEF00D, epoch: 0));
+
+        harness.PumpUntil(() => peer.Refusals.Count > 0, NewfarmTestHarness.WaitTimeout, "the peer to be refused");
+
+        Assert.Equal(NewfarmClientMode.Idle, peer.Client.Mode);
+
+        /* Long enough for several waiter heartbeats to have come due; an idle client sends none, so the one refusal it already
+         * holds stays the only one. */
+        int refusalCountAfterFirst = peer.Refusals.Count;
+        harness.PumpFor(TimeSpan.FromMilliseconds(3500));
+
+        Assert.Equal(refusalCountAfterFirst, peer.Refusals.Count);
+    }
+
+    /// <summary>
     /// A peer that lost only its own link, while the host is still heartbeating, must not be elected. Without this a
     /// single client's network blip would split the session in two.
     /// </summary>

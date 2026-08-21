@@ -568,6 +568,12 @@ namespace Newfarm.Client
 
             ClearUnconfirmedCredential();
 
+            /* The refusal ends the pursuit it answers, so the client returns to idle rather than staying in a mode whose
+             * heartbeats keep addressing the session newfarm just said it does not hold. Left waiting, every heartbeat earns
+             * another refusal at the heartbeat interval, forever: the peer learns nothing new and the log fills with the same
+             * answer. What to pursue next is the game's decision, taken from the Refused event this raises. */
+            Mode = NewfarmClientMode.Idle;
+
             Refused?.Invoke(newfarmRefusalReason);
         }
 
