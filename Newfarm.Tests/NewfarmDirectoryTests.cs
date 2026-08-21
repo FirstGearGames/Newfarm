@@ -795,11 +795,10 @@ public sealed class NewfarmDirectoryTests
 
         host.Client.SurrenderHosting();
 
-        harness.PumpFor(TimeSpan.FromMilliseconds(200));
-
-        // The room died with the host, which is what sends a peer back to the directory.
-        successor.Client.AwaitSession(identity);
-
+        /* The successor never has to ask: the surrender leaves the session hostless, its own waiter heartbeats are
+         * what make it known there, and the next sweep hands it the session. Needing to notice the dead room first and
+         * come back with an await would be strictly slower, and a peer whose await had been lost would never have been
+         * able to come back at all. */
         harness.PumpUntil(() => successor.ElectionCount > 0, TimeSpan.FromSeconds(2), "the successor to be elected on the surrender");
 
         string secondCredential = "ROOM-SECOND";
@@ -809,6 +808,41 @@ public sealed class NewfarmDirectoryTests
         harness.PumpUntil(() => host.ReceivedCredential is not null, NewfarmTestHarness.WaitTimeout, "the peer that gave up hosting to be told where the session went");
 
         Assert.Equal(secondCredential, host.ReceivedCredential!.Value.Credential);
+    }
+
+    /// <summary>
+    /// A peer heartbeating as a waiter at a session with no living host is adopted as one on the strength of the
+    /// heartbeat, and can then be elected to carry the session on, rather than being left to heartbeat at a directory
+    /// that no longer knows it exists.
+    /// </summary>
+    /// <remarks>
+    /// The state under test is what a lost surrender or await leaves behind: the peer believes it is queued and
+    /// heartbeats accordingly, the directory never heard the request, and without the adoption the two never converge.
+    /// Every later election and credential fan-out passes the peer by, and a session whose only survivor is such a
+    /// peer deadlocks with nobody to elect. A living host's session deliberately adopts nobody, since its unknown
+    /// heartbeats are the ordinary chatter of playing peers.
+    /// </remarks>
+    [Fact]
+    public void AStrandedSurvivorOfADeadHost_IsAdoptedFromItsHeartbeatAndElected()
+    {
+        using NewfarmTestHarness harness = new(config => config.HostTimeoutMilliseconds = 400);
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        host.Client.PublishCredential(AdapterTag, "ROOM-FIRST");
+
+        NewfarmTestPeer survivor = harness.CreatePeer();
+
+        survivor.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => survivor.ReceivedCredential is not null, NewfarmTestHarness.WaitTimeout, "the survivor to be handed the room");
+
+        /* Handed the credential, the survivor is deliberately not queued, and its client keeps heartbeating as a
+         * waiter, which is the standing of every playing peer. The host then dies without a word, so nothing but that
+         * heartbeat can ever tell the directory the survivor exists. */
+        host.Dispose();
+
+        harness.PumpUntil(() => survivor.ElectionCount > 0, TimeSpan.FromSeconds(5), "the stranded survivor to be adopted from its heartbeat and elected to carry the session on");
     }
 
     /// <summary>

@@ -423,7 +423,11 @@ public sealed class NewfarmServer : IDisposable
         NewfarmRequestResult surrenderResult = _registry.SurrenderHosting(session!, senderEndPoint, epoch, nowMilliseconds, _notifications);
 
         if (surrenderResult is not NewfarmRequestResult.Accepted)
+        {
+            Log($"Newfarm refused a surrender of session [{sessionId:x16}] epoch [{epoch}] from [{senderEndPoint}]: [{surrenderResult}].");
+
             return;
+        }
 
         Log($"Newfarm took session [{sessionId:x16}] back from [{senderEndPoint}], which gave up hosting it.");
 
@@ -444,8 +448,14 @@ public sealed class NewfarmServer : IDisposable
         if (!TryResolveOrRefuse(sessionId, senderEndPoint, out NewfarmSession? session))
             return;
 
-        if (_registry.ReportCredentialUnreachable(session!, senderEndPoint, epoch, nowMilliseconds) is not NewfarmRequestResult.Accepted)
+        NewfarmRequestResult reportResult = _registry.ReportCredentialUnreachable(session!, senderEndPoint, epoch, nowMilliseconds);
+
+        if (reportResult is not NewfarmRequestResult.Accepted)
+        {
+            Log($"Newfarm refused an unreachable report for session [{sessionId:x16}] epoch [{epoch}] from [{senderEndPoint}]: [{reportResult}].");
+
             return;
+        }
 
         Log($"Newfarm heard from [{senderEndPoint}] that session [{sessionId:x16}] cannot be reached at the credential it holds.");
 
@@ -506,7 +516,36 @@ public sealed class NewfarmServer : IDisposable
         if (session!.RecordWaiterHeartbeat(senderEndPoint, nowMilliseconds))
             return;
 
-        session.TryRecordElectedHeartbeat(senderEndPoint, nowMilliseconds);
+        if (session.TryRecordElectedHeartbeat(senderEndPoint, nowMilliseconds))
+            return;
+
+        /* A peer heartbeating as a waiter that the session knows as neither waiter nor elected believes something the
+         * session does not. While the session has a living host that is the ordinary chatter of playing peers, which are
+         * deliberately not queued. With no living host it is a stranded survivor: the request that would have queued it,
+         * a surrender or an await, was lost on the way in, the peer retries the request only for as long as its epoch
+         * stays current, and then it heartbeats forever at a session that never learns it exists, which starves every
+         * later election and strands the peer for good. Believing the heartbeat converges the two, exactly as if the
+         * await had arrived. */
+        if (session.HostEndPoint is not null && !session.IsHostLost(nowMilliseconds, Config.HostTimeoutMilliseconds))
+            return;
+
+        NewfarmWaitOutcome waitOutcome = _registry.AddWaiter(session, senderEndPoint, nowMilliseconds);
+
+        if (waitOutcome is NewfarmWaitOutcome.SessionFull)
+            return;
+
+        Log($"Newfarm adopted [{senderEndPoint}] as a waiter of session [{sessionId:x16}] on the strength of its heartbeat alone.");
+
+        if (waitOutcome is NewfarmWaitOutcome.CredentialAvailable)
+        {
+            SendCredential(session, senderEndPoint);
+
+            return;
+        }
+
+        session.RecordWaiterKeepAlive(senderEndPoint, nowMilliseconds);
+
+        SendSessionEpoch(NewfarmPacketType.Waiting, session, senderEndPoint);
     }
 
     /// <summary>
@@ -548,6 +587,8 @@ public sealed class NewfarmServer : IDisposable
         {
             NewfarmNotification notification = _notifications[i];
 
+            LogNotification(notification);
+
             if (notification.PacketType is NewfarmPacketType.CredentialAvailable)
             {
                 SendCredential(notification.Session, notification.EndPoint);
@@ -559,6 +600,34 @@ public sealed class NewfarmServer : IDisposable
         }
 
         _notifications.Clear();
+    }
+
+    /// <summary>
+    /// Narrates a lifecycle notification, so an operator's log tells the story of every handover rather than only the
+    /// requests peers made.
+    /// </summary>
+    /// <param name="notification">The notification about to be sent.</param>
+    /// <remarks>Credential fan-outs and waiting keep-alives are deliberately not narrated: the first is counted where the credential is accepted, and the second is a steady drumbeat that would drown the lines worth reading.</remarks>
+    private void LogNotification(NewfarmNotification notification)
+    {
+        switch (notification.PacketType)
+        {
+            case NewfarmPacketType.ElectHost:
+                Log($"Newfarm elected [{notification.EndPoint}] to host session [{notification.Session.SessionId:x16}] for epoch [{notification.Session.Epoch}].");
+                break;
+
+            case NewfarmPacketType.AbortElection:
+                Log($"Newfarm withdrew the election of [{notification.EndPoint}] for session [{notification.Session.SessionId:x16}] epoch [{notification.Session.Epoch}].");
+                break;
+
+            case NewfarmPacketType.HostingRevoked:
+                Log($"Newfarm stood [{notification.EndPoint}] down from hosting session [{notification.Session.SessionId:x16}]: its peers could not reach it and it did not prove otherwise.");
+                break;
+
+            case NewfarmPacketType.ProveHosting:
+                Log($"Newfarm challenged [{notification.EndPoint}] to prove it still hosts session [{notification.Session.SessionId:x16}].");
+                break;
+        }
     }
 
     /// <summary>

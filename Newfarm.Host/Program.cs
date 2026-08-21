@@ -34,7 +34,7 @@ internal static class Program
 
         using NewfarmServer server = new(config!);
 
-        server.Logged += Console.WriteLine;
+        server.Logged += WriteLogLine;
 
         server.Run(cancellationTokenSource.Token);
 
@@ -203,6 +203,19 @@ internal static class Program
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Writes one log line and flushes it at once, because the log is the only witness a directory has: with stdout
+    /// redirected to a file the default block buffering holds the last few kilobytes back, and the lines an
+    /// investigation needs most, the ones written just before things went quiet, are exactly the ones still sitting in
+    /// the buffer.
+    /// </summary>
+    /// <param name="line">The line to write.</param>
+    private static void WriteLogLine(string line)
+    {
+        Console.WriteLine(line);
+        Console.Out.Flush();
     }
 
     /// <summary>
