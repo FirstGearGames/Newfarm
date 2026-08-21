@@ -218,6 +218,77 @@ public sealed class NewfarmDirectoryTests
     }
 
     /// <summary>
+    /// An elected peer that dies without declining must not hold the session open. Its election is withdrawn for
+    /// silence, it lapses from the waiting set like any other silent peer, and the session is evicted once the
+    /// hostless grace passes. Without that, the withdrawal would re-queue the dead peer as freshly heard, the same
+    /// sweep would elect it again, and the session would cycle between electing and withdrawing the same dead peer
+    /// forever, never emptying and never being evicted.
+    /// </summary>
+    [Fact]
+    public void ADeadElectedPeerDoesNotKeepTheSessionAliveForever()
+    {
+        using NewfarmTestHarness harness = new(config => config.HostlessGraceMilliseconds = 2000);
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        NewfarmTestPeer doomedClient = harness.CreatePeer();
+
+        AbandonHost(harness, host);
+
+        doomedClient.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => doomedClient.ElectionCount > 0, NewfarmTestHarness.WaitTimeout, "the doomed client to be elected");
+
+        // The peer dies the moment it is elected, without publishing, declining, or ever heartbeating again.
+        doomedClient.IsAbandoned = true;
+
+        harness.PumpUntil(() => harness.Server.SessionCount == 0, NewfarmTestHarness.WaitTimeout, "the session held only by the dead elected peer to be evicted");
+    }
+
+    /// <summary>
+    /// A live peer that arrives while a dead peer holds the election is elected once that election is withdrawn,
+    /// rather than the session being handed straight back to the dead peer it was just taken from, so one dead
+    /// peer that got there first cannot starve everyone who arrives after it.
+    /// </summary>
+    [Fact]
+    public void ALiveLateArriverIsElectedOverADeadPeerAheadOfIt()
+    {
+        using NewfarmTestHarness harness = new();
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        NewfarmTestPeer deadClient = harness.CreatePeer();
+        NewfarmTestPeer lateClient = harness.CreatePeer();
+
+        AbandonHost(harness, host);
+
+        deadClient.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => deadClient.ElectionCount > 0, NewfarmTestHarness.WaitTimeout, "the first client to be elected");
+
+        // The elected peer dies, and only then does the live peer arrive, so the session already belonged to a
+        // dead peer before the live one ever asked for it.
+        deadClient.IsAbandoned = true;
+
+        lateClient.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => lateClient.ElectionCount > 0, NewfarmTestHarness.WaitTimeout, "the live late arriver to be elected");
+
+        string credential = "ROOM-RESCUED";
+
+        lateClient.Client.PublishCredential(AdapterTag, credential);
+
+        NewfarmTestPeer joiningClient = harness.CreatePeer();
+
+        joiningClient.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => joiningClient.ReceivedCredential is not null, NewfarmTestHarness.WaitTimeout, "a joining client to be handed the live peer's credential");
+
+        Assert.Equal(credential, joiningClient.ReceivedCredential!.Value.Credential);
+        Assert.Equal(1, lateClient.ElectionCount);
+    }
+
+    /// <summary>
     /// A peer guessing at a session id gets nothing: not a queue place, not an election, not a credential. The id is
     /// the whole of a session's security, so the answer to one nobody was given has to be the same answer an expired
     /// session gives.

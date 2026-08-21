@@ -327,25 +327,34 @@ internal sealed class NewfarmSession
     public bool IsDeclined(IPEndPoint waiterEndPoint) => _declinedEndPoints is not null && _declinedEndPoints.Contains(waiterEndPoint);
 
     /// <summary>
-    /// Adds a peer to the waiting set, or refreshes its heartbeat when already present.
+    /// Adds a peer to the waiting set, or brings its heartbeat forward when already present.
     /// </summary>
     /// <param name="waiterEndPoint">The waiting peer.</param>
-    /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
-    public void AddWaiter(IPEndPoint waiterEndPoint, long nowMilliseconds)
+    /// <param name="heartbeatMilliseconds">When the peer was last heard, in <see cref="NewfarmClock.Milliseconds"/> milliseconds.</param>
+    /// <remarks>
+    /// A heartbeat already held is never moved backwards, because a timestamp is evidence of the peer being alive
+    /// and older evidence proves nothing the newer had not already proved. <see cref="AbortElection"/> depends on
+    /// this when it re-queues a peer against a reading that may predate one the waiting set already holds.
+    /// </remarks>
+    public void AddWaiter(IPEndPoint waiterEndPoint, long heartbeatMilliseconds)
     {
         int waiterIndex = FindWaiterIndex(waiterEndPoint);
 
         if (waiterIndex is not UnsetWaiterIndex)
         {
             Waiter waiter = _waiters![waiterIndex];
-            waiter.LastHeartbeatMilliseconds = nowMilliseconds;
-            _waiters[waiterIndex] = waiter;
+
+            if (heartbeatMilliseconds > waiter.LastHeartbeatMilliseconds)
+            {
+                waiter.LastHeartbeatMilliseconds = heartbeatMilliseconds;
+                _waiters[waiterIndex] = waiter;
+            }
 
             return;
         }
 
         _waiters ??= [];
-        _waiters.Add(new Waiter(waiterEndPoint, nowMilliseconds));
+        _waiters.Add(new Waiter(waiterEndPoint, heartbeatMilliseconds));
     }
 
     /// <summary>
@@ -502,13 +511,17 @@ internal sealed class NewfarmSession
     /// <summary>
     /// Withdraws the outstanding election and returns the peer it was withdrawn from.
     /// </summary>
-    /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     /// <returns>The peer that had been elected, or <see langword="null"/> when there was no election.</returns>
     /// <remarks>
     /// The peer rejoins the back of the waiting set, so it still receives the credential the peer elected in its
-    /// place goes on to publish.
+    /// place goes on to publish. It rejoins against <see cref="LastElectedHeartbeatMilliseconds"/> rather than the
+    /// present moment, because a withdrawal says nothing about the peer being alive. An election withdrawn for
+    /// silence would otherwise hand the peer a heartbeat it never sent, and the sweep would elect the same dead
+    /// peer again the moment it looked for a replacement, holding the session open forever. Rejoining on the last
+    /// reading actually heard lets a silent peer lapse from the waiting set on the same schedule as any other
+    /// waiter, while a peer heard moments ago rejoins as fresh as it deserves.
     /// </remarks>
-    public IPEndPoint? AbortElection(long nowMilliseconds)
+    public IPEndPoint? AbortElection()
     {
         IPEndPoint? abortedEndPoint = ElectedEndPoint;
 
@@ -516,7 +529,7 @@ internal sealed class NewfarmSession
         ElectionDeadlineMilliseconds = 0;
 
         if (abortedEndPoint is not null)
-            AddWaiter(abortedEndPoint, nowMilliseconds);
+            AddWaiter(abortedEndPoint, LastElectedHeartbeatMilliseconds);
 
         return abortedEndPoint;
     }
@@ -667,14 +680,14 @@ internal sealed class NewfarmSession
         public long LastKeepAliveMilliseconds;
 
         /// <summary>
-        /// Creates a waiter that has just heartbeated and has not yet been told it is queued.
+        /// Creates a waiter that was last heard at the supplied reading and has not yet been told it is queued.
         /// </summary>
         /// <param name="endPoint">The waiting peer.</param>
-        /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
-        public Waiter(IPEndPoint endPoint, long nowMilliseconds)
+        /// <param name="heartbeatMilliseconds">When the peer was last heard, in <see cref="NewfarmClock.Milliseconds"/> milliseconds.</param>
+        public Waiter(IPEndPoint endPoint, long heartbeatMilliseconds)
         {
             EndPoint = endPoint;
-            LastHeartbeatMilliseconds = nowMilliseconds;
+            LastHeartbeatMilliseconds = heartbeatMilliseconds;
             LastKeepAliveMilliseconds = UnsetKeepAliveMilliseconds;
         }
     }

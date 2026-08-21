@@ -169,7 +169,11 @@ internal sealed class NewfarmSessionRegistry
         if (session.ElectedEndPoint is null || !session.ElectedEndPoint.Equals(decliningEndPoint))
             return NewfarmRequestResult.NotElected;
 
-        WithdrawElection(session, nowMilliseconds, notifications);
+        // The decline is itself proof of life, so the peer rejoins the waiting set as freshly heard rather than
+        // carrying whatever its last heartbeat happened to say.
+        session.TryRecordElectedHeartbeat(decliningEndPoint, nowMilliseconds);
+
+        WithdrawElection(session, notifications);
 
         session.RecordDeclined(decliningEndPoint);
 
@@ -259,9 +263,9 @@ internal sealed class NewfarmSessionRegistry
             ChallengeHostIfUnreachable(session, nowMilliseconds, notifications);
 
             if (session.IsElectionExpired(nowMilliseconds))
-                WithdrawElection(session, nowMilliseconds, notifications);
+                WithdrawElection(session, notifications);
             else if (IsElectedPeerLost(session, nowMilliseconds))
-                WithdrawElection(session, nowMilliseconds, notifications);
+                WithdrawElection(session, notifications);
 
             if (session.HostEndPoint is null && session.ElectedEndPoint is null)
                 TryElectNextWaiter(session, nowMilliseconds, notifications);
@@ -338,19 +342,30 @@ internal sealed class NewfarmSessionRegistry
     }
 
     /// <summary>
-    /// Elects the longest waiting peer, opening a new epoch first so anything published against the previous one is
-    /// refused.
+    /// Elects the longest waiting peer that is neither declined nor lapsed, opening a new epoch first so anything
+    /// published against the previous one is refused.
     /// </summary>
     /// <param name="session">The hostless session to hand on.</param>
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     /// <param name="notifications">Receives the election for the chosen peer.</param>
+    /// <remarks>
+    /// Lapsed waiters are passed over here rather than trusted to have been pruned already, because a withdrawal
+    /// earlier in the same sweep re-queues its peer after the pruning has run, and an election withdrawn for
+    /// silence re-queues one that is already past the timeout. Electing it would hand the session straight back to
+    /// the silence it was just taken from, and the peer would never sit in the waiting set long enough for the
+    /// pruning to reach it.
+    /// </remarks>
     private void TryElectNextWaiter(NewfarmSession session, long nowMilliseconds, List<NewfarmNotification> notifications)
     {
+        uint waiterTimeoutMilliseconds = _config.WaiterTimeoutMilliseconds;
         IPEndPoint? electedEndPoint = null;
         int waiterCount = session.WaiterCount;
 
         for (int i = 0; i < waiterCount; i++)
         {
+            if (session.IsWaiterLapsed(i, nowMilliseconds, waiterTimeoutMilliseconds))
+                continue;
+
             IPEndPoint waiterEndPoint = session.GetWaiterEndPoint(i);
 
             if (session.IsDeclined(waiterEndPoint))
@@ -374,11 +389,10 @@ internal sealed class NewfarmSessionRegistry
     /// Withdraws an outstanding election and tells the peer it has been stood down.
     /// </summary>
     /// <param name="session">The session whose election is being withdrawn.</param>
-    /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     /// <param name="notifications">Receives the abort for the peer that was elected.</param>
-    private static void WithdrawElection(NewfarmSession session, long nowMilliseconds, List<NewfarmNotification> notifications)
+    private static void WithdrawElection(NewfarmSession session, List<NewfarmNotification> notifications)
     {
-        IPEndPoint? abortedEndPoint = session.AbortElection(nowMilliseconds);
+        IPEndPoint? abortedEndPoint = session.AbortElection();
 
         if (abortedEndPoint is null)
             return;
