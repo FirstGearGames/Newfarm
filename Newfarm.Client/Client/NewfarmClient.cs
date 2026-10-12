@@ -187,7 +187,7 @@ namespace Newfarm.Client
         {
             Config = config ?? throw new ArgumentNullException(nameof(config));
 
-            _socket = new Socket(Config.ServerEndPoint.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+            _socket = new(Config.ServerEndPoint.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
             _socket.Blocking = false;
         }
 
@@ -400,7 +400,7 @@ namespace Newfarm.Client
                 if (receivedLength <= 0)
                     return;
 
-                HandleDatagram(new ReadOnlySpan<byte>(_receiveBuffer, 0, receivedLength));
+                HandleDatagram(new(_receiveBuffer, 0, receivedLength));
             }
         }
 
@@ -466,7 +466,7 @@ namespace Newfarm.Client
             if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
                 return;
 
-            Identity = new NewfarmSessionIdentity(sessionId, epoch);
+            Identity = new(sessionId, epoch);
             Mode = NewfarmClientMode.Hosting;
 
             _outstandingRequest = default;
@@ -488,7 +488,7 @@ namespace Newfarm.Client
             if (sessionId != Identity.SessionId)
                 return;
 
-            Identity = new NewfarmSessionIdentity(Identity.SessionId, epoch);
+            Identity = new(Identity.SessionId, epoch);
             Mode = NewfarmClientMode.Elected;
 
             _outstandingRequest = default;
@@ -533,12 +533,12 @@ namespace Newfarm.Client
             if (!NewfarmWireFormat.TryReadCredential(datagram, NewfarmWireFormat.SessionEpochHeaderSize, out string adapterTag, out string credential))
                 return;
 
-            Identity = new NewfarmSessionIdentity(Identity.SessionId, epoch);
+            Identity = new(Identity.SessionId, epoch);
 
             _outstandingRequest = default;
             _nextRequestRetryMilliseconds = 0;
 
-            CredentialAvailable?.Invoke(new NewfarmCredential(adapterTag, credential, epoch));
+            CredentialAvailable?.Invoke(new(adapterTag, credential, epoch));
         }
 
         /// <summary>
@@ -595,7 +595,7 @@ namespace Newfarm.Client
             if (sessionId != Identity.SessionId || Mode is not NewfarmClientMode.Hosting)
                 return;
 
-            Identity = new NewfarmSessionIdentity(Identity.SessionId, epoch);
+            Identity = new(Identity.SessionId, epoch);
 
             // Waiting rather than idle, so this peer keeps its place in the session and is told where it moves to.
             Mode = NewfarmClientMode.Waiting;
@@ -634,7 +634,7 @@ namespace Newfarm.Client
             if (sessionId != Identity.SessionId)
                 return;
 
-            Identity = new NewfarmSessionIdentity(Identity.SessionId, epoch);
+            Identity = new(Identity.SessionId, epoch);
 
             // Waiting is the answer to all three of these, and without clearing them here a report or a surrender would
             // be repeated at the retry interval for as long as the peer stayed queued.
@@ -729,7 +729,7 @@ namespace Newfarm.Client
 
             int length = NewfarmWireFormat.WriteSessionEpoch(_sendBuffer, NewfarmPacketType.PublishCredential, Identity.SessionId, _unconfirmedEpoch);
 
-            length += NewfarmWireFormat.WriteCredential(new Span<byte>(_sendBuffer, length, _sendBuffer.Length - length), _unconfirmedAdapterTag, _unconfirmedCredential);
+            length += NewfarmWireFormat.WriteCredential(new(_sendBuffer, length, _sendBuffer.Length - length), _unconfirmedAdapterTag, _unconfirmedCredential);
 
             Send(length);
         }

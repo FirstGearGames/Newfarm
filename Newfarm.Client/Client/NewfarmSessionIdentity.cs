@@ -56,7 +56,7 @@ namespace Newfarm.Client
                 return false;
             }
 
-            identity = new NewfarmSessionIdentity(sessionId, epoch: 0);
+            identity = new(sessionId, epoch: 0);
 
             return true;
         }
