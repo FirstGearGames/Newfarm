@@ -1,4 +1,6 @@
-﻿using System;
+﻿// The project builds this file with nullable enabled, but Unity compiles it with no nullable context, so the annotations are declared here.
+#nullable enable annotations
+using System;
 using System.Net;
 using System.Net.Sockets;
 using Newfarm.Wire;
