@@ -38,7 +38,7 @@ namespace Newfarm.Wire
         /// room code, an allocation id, a host and port. Anything longer is refused rather than truncated, because half a
         /// credential is worse than none.
         /// </remarks>
-        public const int MaximumTextLength = 32;
+        public const int MaximumTextLength = 64;
 
         /// <summary>
         /// The largest datagram newfarm will read or write.
@@ -382,6 +382,10 @@ namespace Newfarm.Wire
         /// <summary>
         /// The most bytes one character can take once encoded, which bounds what a length prefix may claim.
         /// </summary>
-        private const int MaximumUtf8BytesPerCharacter = 4;
+        /// <remarks>
+        /// Three, because a character is a UTF-16 unit: one outside the basic plane is two of them and four bytes, and a lone half
+        /// is written as a three byte replacement. Four would put the longest value past what a one byte length prefix can hold.
+        /// </remarks>
+        private const int MaximumUtf8BytesPerCharacter = 3;
     }
 }
