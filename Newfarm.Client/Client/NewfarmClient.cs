@@ -347,6 +347,26 @@ namespace Newfarm.Client
         }
 
         /// <summary>
+        /// Leaves the session this peer is waiting in or playing in, without ending it for anybody else.
+        /// </summary>
+        /// <remarks>
+        /// Nothing is sent. The heartbeats stop, so newfarm forgets this peer once
+        /// <c>WaiterTimeoutMilliseconds</c> passes without one, and the identity is let go, so an election or a credential
+        /// newfarm sends for the session before then is ignored rather than acted on. A peer that is hosting surrenders
+        /// first, through <see cref="SurrenderHosting"/>, so the session is handed on at once.
+        /// </remarks>
+        public void LeaveSession()
+        {
+            Identity = default;
+            Mode = NewfarmClientMode.Idle;
+
+            ClearUnconfirmedCredential();
+
+            _outstandingRequest = default;
+            _nextRequestRetryMilliseconds = 0;
+        }
+
+        /// <summary>
         /// Drains everything newfarm has sent, raises the events for it, and sends any heartbeat or retry now due. Call
         /// this regularly, for instance once per frame or per network tick.
         /// </summary>
