@@ -2,10 +2,7 @@
 
     <!--
         Redirects this project's intermediate (obj) and output (bin) folders out of the source tree into the shared
-        .artifacts directory at the repository root. This folder is junctioned into the Unity project under
-        Assets\Nucleus\Integrations\Newfarm Client, so any build artifacts written here would be imported by Unity as
-        assets (compiled DLLs become plugins, generated sources duplicate symbols). The .NET build is unaffected beyond
-        the path change.
+        .artifacts directory at the repository root.
     -->
     <PropertyGroup>
         <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)..\.artifacts\$(MSBuildProjectName)\obj\</BaseIntermediateOutputPath>

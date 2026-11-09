@@ -2,7 +2,7 @@
 
     <PropertyGroup>
         <TargetFrameworks>netstandard2.1;net8.0</TargetFrameworks>
-        <!-- C# 9 because this folder is consumed as source by Unity, junctioned into the integration project. -->
+        <!-- C# 9 so the source stays compatible with Unity's compiler. -->
         <LangVersion>9</LangVersion>
         <Nullable>enable</Nullable>
         <AssemblyName>Newfarm.Client</AssemblyName>
