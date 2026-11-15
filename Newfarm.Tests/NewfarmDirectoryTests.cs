@@ -49,6 +49,48 @@ public sealed class NewfarmDirectoryTests
     }
 
     /// <summary>
+    /// A peer that names the directory by host name finds it through DNS and obtains a session.
+    /// </summary>
+    [Fact]
+    public void APeerNamingTheDirectoryByHostNameObtainsASession()
+    {
+        using NewfarmTestHarness harness = new();
+
+        NewfarmTestPeer host = harness.CreatePeer("localhost");
+        string? lookupFailure = null;
+        host.Client.ServerLookupFailed += message => lookupFailure = message;
+
+        host.Client.CreateSession();
+
+        harness.PumpUntil(() => host.CreatedIdentity is not null, NewfarmTestHarness.WaitTimeout, "the session to be created at the looked up address");
+
+        Assert.Null(lookupFailure);
+        Assert.Equal(1, harness.Server.SessionCount);
+    }
+
+    /// <summary>
+    /// A host name that does not resolve is reported, and nothing reaches the directory.
+    /// </summary>
+    [Fact]
+    public void AHostNameThatDoesNotResolveIsReported()
+    {
+        using NewfarmTestHarness harness = new();
+
+        // The .invalid top-level domain is reserved never to resolve.
+        NewfarmTestPeer host = harness.CreatePeer("newfarm.invalid");
+        string? lookupFailure = null;
+        host.Client.ServerLookupFailed += message => lookupFailure = message;
+
+        host.Client.CreateSession();
+
+        harness.PumpUntil(() => lookupFailure is not null, NewfarmTestHarness.WaitTimeout, "the lookup to fail");
+
+        Assert.Contains("newfarm.invalid", lookupFailure);
+        Assert.Null(host.CreatedIdentity);
+        Assert.Equal(0, harness.Server.SessionCount);
+    }
+
+    /// <summary>
     /// Session ids are drawn from a cryptographic source, so two sessions never share one and a run of them shows no
     /// pattern a third party could follow.
     /// </summary>

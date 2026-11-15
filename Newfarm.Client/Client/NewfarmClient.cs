@@ -3,6 +3,7 @@
 using System;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading.Tasks;
 using Newfarm.Wire;
 
 namespace Newfarm.Client
@@ -107,6 +108,21 @@ namespace Newfarm.Client
         public delegate void NewfarmRefusedHandler(NewfarmRefusalReason newfarmRefusalReason);
 
         /// <summary>
+        /// Raised from <see cref="Poll"/> when looking up <see cref="NewfarmClientConfig.ServerAddress"/> fails or finds no address.
+        /// </summary>
+        /// <remarks>
+        /// Nothing reaches the directory until a lookup succeeds, unless an earlier session's lookup already found it, so the request in
+        /// progress goes unanswered and its caller times out as it would for a directory that is down. The next session looks it up again.
+        /// </remarks>
+        public event NewfarmServerLookupFailedHandler? ServerLookupFailed;
+
+        /// <summary>
+        /// Handles <see cref="ServerLookupFailed"/>.
+        /// </summary>
+        /// <param name="message">Names the host and why its lookup failed.</param>
+        public delegate void NewfarmServerLookupFailedHandler(string message);
+
+        /// <summary>
         /// The configuration the client was constructed with.
         /// </summary>
         public NewfarmClientConfig Config { get; }
@@ -123,9 +139,24 @@ namespace Newfarm.Client
         public NewfarmSessionIdentity Identity { get; private set; }
 
         /// <summary>
-        /// The socket used to reach newfarm, bound to an ephemeral port.
+        /// The socket used to reach newfarm, bound to an ephemeral port, or <see langword="null"/> until the directory's address is known.
         /// </summary>
-        private readonly Socket _socket;
+        private Socket? _socket;
+
+        /// <summary>
+        /// Where the directory is, or <see langword="null"/> until its address is known.
+        /// </summary>
+        private IPEndPoint? _serverEndPoint;
+
+        /// <summary>
+        /// The DNS lookup of the directory's host name in progress, or <see langword="null"/> when none is.
+        /// </summary>
+        private Task<IPAddress[]>? _serverLookup;
+
+        /// <summary>
+        /// Whether <see cref="NewfarmClientConfig.ServerAddress"/> is an IP address, which is never looked up.
+        /// </summary>
+        private readonly bool _isServerAddressIp;
 
         /// <summary>
         /// The receive buffer, sized to <see cref="NewfarmWireFormat.MaximumDatagramSize"/>.
@@ -189,8 +220,10 @@ namespace Newfarm.Client
         {
             Config = config ?? throw new ArgumentNullException(nameof(config));
 
-            _socket = new(Config.ServerEndPoint.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
-            _socket.Blocking = false;
+            _isServerAddressIp = IPAddress.TryParse(Config.ServerAddress, out IPAddress? serverIpAddress);
+
+            if (_isServerAddressIp)
+                SetServerEndPoint(serverIpAddress!);
         }
 
         /// <summary>
@@ -199,6 +232,8 @@ namespace Newfarm.Client
         /// </summary>
         public void CreateSession()
         {
+            LookUpServerAddress(isSessionStart: true);
+
             Mode = NewfarmClientMode.CreatingSession;
 
             BeginRequest(NewfarmPacketType.CreateSession);
@@ -211,6 +246,8 @@ namespace Newfarm.Client
         /// <param name="identity">The identity the peer was given by the host.</param>
         public void AwaitSession(NewfarmSessionIdentity identity)
         {
+            LookUpServerAddress(isSessionStart: Mode is NewfarmClientMode.Idle);
+
             Identity = identity;
             Mode = NewfarmClientMode.Waiting;
 
@@ -226,6 +263,8 @@ namespace Newfarm.Client
         /// <param name="identity">The identity of the session being hosted.</param>
         public void StartHosting(NewfarmSessionIdentity identity)
         {
+            LookUpServerAddress(isSessionStart: Mode is NewfarmClientMode.Idle);
+
             Identity = identity;
             Mode = NewfarmClientMode.Hosting;
 
@@ -375,6 +414,7 @@ namespace Newfarm.Client
             if (_isDisposed)
                 return;
 
+            CompleteServerLookup();
             ReceiveAll();
 
             long nowMilliseconds = NewfarmClock.Milliseconds;
@@ -391,7 +431,67 @@ namespace Newfarm.Client
 
             _isDisposed = true;
 
-            _socket.Dispose();
+            _socket?.Dispose();
+        }
+
+        /// <summary>
+        /// Starts looking the directory's host name up when a session starts, or when no address is known yet, so each session reaches
+        /// the directory where it is now without a lookup on every request.
+        /// </summary>
+        /// <param name="isSessionStart">Whether a session is being opened or joined, rather than continued.</param>
+        /// <remarks>
+        /// Requests sent while the lookup runs go to the address the last one found, or nowhere when none has, and are repeated by the
+        /// request retry and heartbeat timers once it completes.
+        /// </remarks>
+        private void LookUpServerAddress(bool isSessionStart)
+        {
+            if (_isServerAddressIp || _serverLookup is not null)
+                return;
+
+            if (_serverEndPoint is not null && !isSessionStart)
+                return;
+
+            try
+            {
+                _serverLookup = Dns.GetHostAddressesAsync(Config.ServerAddress);
+            }
+            catch (Exception exception) when (exception is SocketException or ArgumentException)
+            {
+                ServerLookupFailed?.Invoke($"The DNS lookup of newfarm directory [{Config.ServerAddress}] failed: {exception.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Takes the address a finished lookup found, or raises <see cref="ServerLookupFailed"/> when it found none.
+        /// </summary>
+        private void CompleteServerLookup()
+        {
+            if (_serverLookup is not { IsCompleted: true } serverLookup)
+                return;
+
+            _serverLookup = null;
+
+            if (serverLookup.IsFaulted)
+                ServerLookupFailed?.Invoke($"The DNS lookup of newfarm directory [{Config.ServerAddress}] failed: {serverLookup.Exception!.GetBaseException().Message}");
+            else if (serverLookup.IsCanceled || serverLookup.Result.Length == 0)
+                ServerLookupFailed?.Invoke($"The DNS lookup of newfarm directory [{Config.ServerAddress}] returned no addresses.");
+            else
+                SetServerEndPoint(serverLookup.Result[0]);
+        }
+
+        /// <summary>
+        /// Points the client at the directory's address, opening a socket for its address family when the current one cannot reach it.
+        /// </summary>
+        /// <param name="serverIpAddress">The directory's address.</param>
+        private void SetServerEndPoint(IPAddress serverIpAddress)
+        {
+            _serverEndPoint = new(serverIpAddress, Config.ServerPort);
+
+            if (_socket?.AddressFamily == serverIpAddress.AddressFamily)
+                return;
+
+            _socket?.Dispose();
+            _socket = new(serverIpAddress.AddressFamily, SocketType.Dgram, ProtocolType.Udp) { Blocking = false };
         }
 
         /// <summary>
@@ -399,6 +499,9 @@ namespace Newfarm.Client
         /// </summary>
         private void ReceiveAll()
         {
+            if (_socket is null)
+                return;
+
             while (true)
             {
                 int receivedLength;
@@ -804,9 +907,13 @@ namespace Newfarm.Client
             // against a third party.
             int paddedLength = NewfarmWireFormat.PadRequest(_sendBuffer, length);
 
+            // Nowhere to send yet: the directory's host name is still being looked up, and the timers repeat this once it resolves.
+            if (_socket is null || _serverEndPoint is null)
+                return;
+
             try
             {
-                _socket.SendTo(_sendBuffer, 0, paddedLength, SocketFlags.None, Config.ServerEndPoint);
+                _socket.SendTo(_sendBuffer, 0, paddedLength, SocketFlags.None, _serverEndPoint);
             }
             catch (SocketException)
             {

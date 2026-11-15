@@ -1,4 +1,5 @@
-﻿using System.Net;
+﻿using System;
+using System.Net;
 
 namespace Newfarm.Client
 {
@@ -10,9 +11,15 @@ namespace Newfarm.Client
         // ReSharper disable FieldCanBeMadeReadOnly.Global
 
         /// <summary>
-        /// The newfarm directory to talk to.
+        /// The newfarm directory's IP address or host name.
         /// </summary>
-        public IPEndPoint ServerEndPoint { get; }
+        /// <remarks>A host name is looked up through DNS each time a session is opened or joined. An IP address is never looked up.</remarks>
+        public string ServerAddress { get; }
+
+        /// <summary>
+        /// The port the newfarm directory listens on.
+        /// </summary>
+        public ushort ServerPort { get; }
 
         /// <summary>
         /// How often the client tells newfarm it is still hosting.
@@ -45,12 +52,20 @@ namespace Newfarm.Client
         public uint UnreachableReportIntervalMilliseconds = 5000;
 
         /// <summary>
-        /// Creates a configuration pointing at the supplied directory.
+        /// Creates a configuration pointing at the directory at an IP address or host name.
+        /// </summary>
+        /// <param name="serverAddress">The newfarm directory's IP address or host name.</param>
+        /// <param name="serverPort">The port the newfarm directory listens on.</param>
+        public NewfarmClientConfig(string serverAddress, ushort serverPort)
+        {
+            ServerAddress = serverAddress ?? throw new ArgumentNullException(nameof(serverAddress));
+            ServerPort = serverPort;
+        }
+
+        /// <summary>
+        /// Creates a configuration pointing at the directory at an IP address and port.
         /// </summary>
         /// <param name="serverEndPoint">The newfarm directory to talk to.</param>
-        public NewfarmClientConfig(IPEndPoint serverEndPoint)
-        {
-            ServerEndPoint = serverEndPoint;
-        }
+        public NewfarmClientConfig(IPEndPoint serverEndPoint) : this(serverEndPoint.Address.ToString(), (ushort)serverEndPoint.Port) { }
     }
 }

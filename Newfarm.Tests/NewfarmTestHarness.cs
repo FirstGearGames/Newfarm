@@ -83,10 +83,11 @@ internal sealed class NewfarmTestHarness : IDisposable
     /// <summary>
     /// Creates a peer pointed at the server.
     /// </summary>
+    /// <param name="serverAddress">The IP address or host name the peer names the server by.</param>
     /// <returns>The peer, which the harness disposes.</returns>
-    public NewfarmTestPeer CreatePeer()
+    public NewfarmTestPeer CreatePeer(string serverAddress = "127.0.0.1")
     {
-        NewfarmClientConfig config = new(new IPEndPoint(IPAddress.Loopback, Port))
+        NewfarmClientConfig config = new(serverAddress, (ushort)Port)
         {
             HostHeartbeatIntervalMilliseconds = 100,
             WaiterHeartbeatIntervalMilliseconds = 100,
