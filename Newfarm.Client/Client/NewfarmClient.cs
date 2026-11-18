@@ -591,6 +591,12 @@ namespace Newfarm.Client
             if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
                 return;
 
+            /* Only the first answer is taken. Over a slow link the request is retried before that answer arrives, and newfarm opens
+             * a session for every copy, so adopting a later answer swapped the host onto a session it had published nothing for
+             * while its clients held the first. The ones not taken go quiet and newfarm forgets them. */
+            if (Mode is not NewfarmClientMode.CreatingSession)
+                return;
+
             Identity = new(sessionId, epoch);
             Mode = NewfarmClientMode.Hosting;
 

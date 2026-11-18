@@ -49,6 +49,36 @@ public sealed class NewfarmDirectoryTests
     }
 
     /// <summary>
+    /// A request to create a session that is repeated before its answer arrives, as a retry is over a slow link, opens a
+    /// second session on the directory; the host keeps the one it was first given rather than swapping to the later one.
+    /// </summary>
+    /// <remarks>
+    /// Swapping left the host heartbeating a session it had published nothing for, while its clients had been handed the
+    /// one it published to, so the session they held went quiet and was taken off it.
+    /// </remarks>
+    [Fact]
+    public void ARepeatedCreateRequestDoesNotSwapTheSessionTheHostWasGiven()
+    {
+        using NewfarmTestHarness harness = new();
+
+        NewfarmTestPeer host = harness.CreatePeer();
+        List<NewfarmSessionIdentity> createdIdentities = [];
+
+        host.Client.SessionCreated += createdIdentities.Add;
+
+        // The second call sends the request again before the first answer is read, which is what a retry does.
+        host.Client.CreateSession();
+        host.Client.CreateSession();
+
+        harness.PumpUntil(() => harness.Server.SessionCount == 2, NewfarmTestHarness.WaitTimeout, "the directory to answer both requests");
+        harness.PumpFor(TimeSpan.FromMilliseconds(300));
+
+        Assert.Single(createdIdentities);
+        Assert.Equal(createdIdentities[0].SessionId, host.Client.Identity.SessionId);
+        Assert.Equal(NewfarmClientMode.Hosting, host.Client.Mode);
+    }
+
+    /// <summary>
     /// A peer that names the directory by host name finds it through DNS and obtains a session.
     /// </summary>
     [Fact]
