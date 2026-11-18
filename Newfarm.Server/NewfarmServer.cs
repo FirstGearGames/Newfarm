@@ -309,13 +309,33 @@ public sealed class NewfarmServer : IDisposable
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     private void HandleHostHeartbeat(ReadOnlySpan<byte> datagram, IPEndPoint senderEndPoint, long nowMilliseconds)
     {
-        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint _))
+        if (!NewfarmWireFormat.TryReadSessionEpoch(datagram, out ulong sessionId, out uint epoch))
             return;
 
         if (!TryResolveOrRefuse(sessionId, senderEndPoint, out NewfarmSession? session))
             return;
 
-        session!.TryRecordHostHeartbeat(senderEndPoint, nowMilliseconds);
+        if (session!.TryRecordHostHeartbeat(senderEndPoint, nowMilliseconds))
+            return;
+
+        // An elected peer's first heartbeat can outrun the credential it is publishing, and that is not a stale host.
+        if (senderEndPoint.Equals(session.ElectedEndPoint))
+            return;
+
+        if (session.TryReadoptTimedOutHost(senderEndPoint, epoch, nowMilliseconds))
+        {
+            Log($"Newfarm took [{senderEndPoint}] back as host of session [{sessionId:x16}]: it went quiet past the host timeout and nobody took the session on meanwhile.");
+
+            return;
+        }
+
+        /* A peer heartbeating as host that the session does not know as host believes something the session does not,
+         * most often a host that went quiet past the timeout and came back after the session moved on. Ignoring it left
+         * that peer serving an empty room for good. Told, it stands down and asks where the session went. One reply to
+         * one request, so this amplifies nothing. */
+        Log($"Newfarm stood [{senderEndPoint}] down from hosting session [{sessionId:x16}]: it is not the session's host.");
+
+        SendSessionEpoch(NewfarmPacketType.HostingRevoked, session, senderEndPoint);
     }
 
     /// <summary>

@@ -729,6 +729,11 @@ namespace Newfarm.Client
 
             _nextHeartbeatMilliseconds = 0;
 
+            /* Asked rather than waited for. A host revoked after the session already moved on is no waiter of newfarm's,
+             * so nothing would ever be sent its way; the request is answered with where the session is now, and retried
+             * until it is. */
+            BeginRequest(NewfarmPacketType.AwaitSession);
+
             HostingRevoked?.Invoke(epoch);
         }
 

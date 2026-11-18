@@ -275,7 +275,7 @@ internal sealed class NewfarmSessionRegistry
             RemoveLapsedWaiters(session, nowMilliseconds);
 
             if (session.HostEndPoint is not null && session.IsHostLost(nowMilliseconds, _config.HostTimeoutMilliseconds))
-                session.ClearHost(nowMilliseconds);
+                session.TimeOutHost(nowMilliseconds);
 
             ChallengeHostIfUnreachable(session, nowMilliseconds, notifications);
 

@@ -174,6 +174,16 @@ internal sealed class NewfarmSession
     private List<Waiter>? _waiters;
 
     /// <summary>
+    /// The host this session last dropped for going quiet, which is the one peer allowed back by heartbeating alone,
+    /// and only until somebody else takes the session on.
+    /// </summary>
+    /// <remarks>
+    /// Null whenever the host left any other way. A host that surrendered or was stood down gave the session up, and
+    /// a heartbeat from it still in flight must not take the session back.
+    /// </remarks>
+    private IPEndPoint? _timedOutHostEndPoint;
+
+    /// <summary>
     /// Creates a session with a fresh identity.
     /// </summary>
     /// <param name="sessionId">The identity the host will distribute.</param>
@@ -196,8 +206,9 @@ internal sealed class NewfarmSession
     /// <remarks>
     /// A heartbeat from any other peer is ignored rather than adopted. Every peer in a session holds the secret, so
     /// adopting the sender would let any of them install itself as host, which both suppresses the election that
-    /// should have happened and puts two peers in charge of one session. Hosting is reached by opening the session or
-    /// by publishing a credential after being elected, and by nothing else.
+    /// should have happened and puts two peers in charge of one session. Hosting is reached by opening the session, by
+    /// publishing a credential after being elected, or by a host that went quiet coming back before anybody took the
+    /// session on, through <see cref="TryReadoptTimedOutHost"/>, and by nothing else.
     /// </remarks>
     public bool TryRecordHostHeartbeat(IPEndPoint hostEndPoint, long nowMilliseconds)
     {
@@ -236,6 +247,52 @@ internal sealed class NewfarmSession
 
         // Whoever hosts next starts with a clean slate rather than serving out the last host's cooldown.
         LastHostChallengeMilliseconds = UnchallengedHost;
+
+        _timedOutHostEndPoint = null;
+    }
+
+    /// <summary>
+    /// Drops a host that has gone quiet past the timeout, remembering it so it can be taken back if it returns before
+    /// anybody else takes the session on.
+    /// </summary>
+    /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
+    public void TimeOutHost(long nowMilliseconds)
+    {
+        IPEndPoint? hostEndPoint = HostEndPoint;
+
+        ClearHost(nowMilliseconds);
+
+        _timedOutHostEndPoint = hostEndPoint;
+    }
+
+    /// <summary>
+    /// Takes back a host that went quiet past the timeout and is heartbeating again, when nobody has taken the session
+    /// on in the meantime.
+    /// </summary>
+    /// <param name="hostEndPoint">The peer heartbeating as host.</param>
+    /// <param name="epoch">The epoch the peer believes it hosts.</param>
+    /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
+    /// <returns><see langword="true"/> when the peer is the host again.</returns>
+    /// <remarks>
+    /// A long frame, a breakpoint or a suspended app silences a host that never stopped hosting. Taking it back is
+    /// only safe while nothing has moved: no election under way, nobody waiting to be told where the session is, and
+    /// the epoch still the one it hosted. Past any of those the session belongs to somebody else's story, and the
+    /// host is stood down instead.
+    /// </remarks>
+    public bool TryReadoptTimedOutHost(IPEndPoint hostEndPoint, uint epoch, long nowMilliseconds)
+    {
+        if (HostEndPoint is not null || ElectedEndPoint is not null || WaiterCount != 0 || epoch != Epoch)
+            return false;
+
+        if (_timedOutHostEndPoint is null || !_timedOutHostEndPoint.Equals(hostEndPoint))
+            return false;
+
+        HostEndPoint = hostEndPoint;
+        LastHostHeartbeatMilliseconds = nowMilliseconds;
+
+        _timedOutHostEndPoint = null;
+
+        return true;
     }
 
     /// <summary>

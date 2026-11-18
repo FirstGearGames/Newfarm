@@ -468,6 +468,84 @@ public sealed class NewfarmDirectoryTests
     }
 
     /// <summary>
+    /// A host that goes quiet past the timeout, for a long frame, a breakpoint or a suspended app, and heartbeats again
+    /// before anybody took the session on, is the host again rather than a stranger heartbeating at a session it lost.
+    /// </summary>
+    [Fact]
+    public void AHostThatWentQuietAndCameBackBeforeAnybodyTookOverKeepsTheSession()
+    {
+        using NewfarmTestHarness harness = new();
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        string credential = "ROOM-ORIGINAL";
+
+        host.Client.PublishCredential(AdapterTag, credential);
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(200));
+
+        AbandonHost(harness, host);
+
+        host.IsAbandoned = false;
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(400));
+
+        // A client that only lost its own link is sent straight back to the room, which only happens while a host is alive.
+        NewfarmTestPeer blippedClient = harness.CreatePeer();
+
+        blippedClient.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => blippedClient.ReceivedCredential is not null, NewfarmTestHarness.WaitTimeout, "the blipped client to be sent back to the host's room");
+
+        // Long enough for several sweeps, any of which would elect the client if the session were still hostless.
+        harness.PumpFor(TimeSpan.FromMilliseconds(500));
+
+        Assert.Equal(credential, blippedClient.ReceivedCredential!.Value.Credential);
+        Assert.Equal(0, blippedClient.ElectionCount);
+        Assert.Equal(0, host.RevocationCount);
+        Assert.Equal(NewfarmClientMode.Hosting, host.Client.Mode);
+    }
+
+    /// <summary>
+    /// A host that went quiet past the timeout and comes back after the session moved on is told it no longer hosts,
+    /// and is given the room the session moved to, rather than left serving an empty room it believes is the session.
+    /// </summary>
+    [Fact]
+    public void AHostThatWentQuietAndCameBackAfterTheSessionMovedOnIsStoodDownAndToldWhere()
+    {
+        using NewfarmTestHarness harness = new();
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        host.Client.PublishCredential(AdapterTag, "ROOM-ORIGINAL");
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(200));
+
+        NewfarmTestPeer successor = harness.CreatePeer();
+
+        AbandonHost(harness, host);
+
+        successor.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => successor.ElectionCount > 0, NewfarmTestHarness.WaitTimeout, "the successor to be elected");
+
+        string liveCredential = "ROOM-LIVE";
+
+        successor.Client.PublishCredential(AdapterTag, liveCredential);
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(200));
+
+        // The old host's frames resume, still believing it hosts epoch 1.
+        host.IsAbandoned = false;
+
+        harness.PumpUntil(() => host.ReceivedCredential is not null, NewfarmTestHarness.WaitTimeout, "the old host to be told where the session went");
+
+        Assert.Equal(1, host.RevocationCount);
+        Assert.Equal(NewfarmClientMode.Waiting, host.Client.Mode);
+        Assert.Equal(liveCredential, host.ReceivedCredential!.Value.Credential);
+    }
+
+    /// <summary>
     /// Newfarm hands out an opaque credential, so a value that is not text and not a room code survives the round
     /// trip byte for byte.
     /// </summary>
