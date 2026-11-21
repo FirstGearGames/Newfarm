@@ -168,7 +168,8 @@ public sealed class NewfarmServerConfig
     public int MaximumTrackedPeers = 65536;
 
     /// <summary>
-    /// The most machines the limiter will track separately.
+    /// The most machines the limiter will track separately. Past this the table is emptied and every address starts
+    /// again on a full allowance, rather than a new address being turned away.
     /// </summary>
     public int MaximumTrackedAddresses = 16384;
 

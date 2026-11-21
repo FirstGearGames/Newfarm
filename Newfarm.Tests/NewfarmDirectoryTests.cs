@@ -1231,6 +1231,40 @@ public sealed class NewfarmDirectoryTests
     }
 
     /// <summary>
+    /// A directory whose table of sending addresses is full still answers an address it has never heard from.
+    /// </summary>
+    /// <remarks>
+    /// Every address that sends anything holds a place in the limiter's table until it has been quiet for a while, and a
+    /// full table turned every new address away in silence. Source addresses cost a spoofing attacker nothing, so a trickle
+    /// of datagrams from invented ones kept the table full and locked every new host and waiter out of the directory.
+    /// </remarks>
+    [Fact]
+    public void AFullTableOfSendersDoesNotLockANewAddressOut()
+    {
+        const int MaximumTrackedAddresses = 8;
+
+        using NewfarmTestHarness harness = new(config => config.MaximumTrackedAddresses = MaximumTrackedAddresses);
+
+        // Each loopback address stands in for a source address an attacker invented. Any request at all takes a place, and
+        // one that is answered shows the directory took it.
+        for (int i = 0; i < MaximumTrackedAddresses; i++)
+        {
+            using NewfarmRawPeer spoofedSender = new(harness.Port, IPAddress.Parse($"127.0.0.{i + 2}"));
+
+            Assert.Single(spoofedSender.CreateSessions(sessionCount: 1));
+        }
+
+        NewfarmTestPeer host = harness.CreatePeer();
+
+        host.Client.CreateSession();
+
+        // Several retries' worth, any of which would be answered by a directory still listening to new addresses.
+        harness.PumpFor(TimeSpan.FromMilliseconds(1500));
+
+        Assert.NotNull(host.CreatedIdentity);
+    }
+
+    /// <summary>
     /// One peer going as hard as a real one ever legitimately goes, for long enough to spend a burst allowance
     /// several times over, is never throttled.
     /// </summary>

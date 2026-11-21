@@ -116,10 +116,12 @@ internal sealed class NewfarmRequestLimiter
             return isAdmitted;
         }
 
-        // A table of addresses is bounded by how many machines can reach the port, and an attacker cannot invent new
-        // ones the way it can invent ports, so this one is allowed to grow to its cap and then hold the line.
+        /* Emptied rather than closed once full. Source addresses cost a spoofing attacker nothing, so a table that held the
+         * line at its cap let a trickle of datagrams from invented addresses keep it full and turn every new host and waiter
+         * away. Emptying it costs only what it tracked: every address starts again on a full allowance, which an attacker
+         * has to spend a table's worth of datagrams to buy once. */
         if (_bucketsByAddress.Count >= _config.MaximumTrackedAddresses)
-            return false;
+            _bucketsByAddress.Clear();
 
         bucket = NewfarmTokenBucket.Create(nowMilliseconds, _config.RequestBurstPerAddress);
 
