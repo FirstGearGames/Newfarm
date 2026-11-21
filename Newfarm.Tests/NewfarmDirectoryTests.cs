@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Threading;
 using Newfarm.Client;
 using Newfarm.Wire;
@@ -784,6 +785,41 @@ public sealed class NewfarmDirectoryTests
     }
 
     /// <summary>
+    /// A peer acts only on what the directory itself sends. A datagram from anywhere else naming the session, whose id
+    /// every peer in it holds, neither stands the host down nor moves a client to another room.
+    /// </summary>
+    [Fact(Skip = "MIGR-3, held for a decision: filtering by sender costs either about 150 bytes of garbage per received datagram (ReceiveFrom) or a socket pinned to its local address across a network change (Connect). Remove the skip to see it fail.")]
+    public void APeerActsOnlyOnWhatTheDirectoryItselfSends()
+    {
+        using NewfarmTestHarness harness = new();
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        string credential = "ROOM-REAL";
+
+        host.Client.PublishCredential(AdapterTag, credential);
+
+        NewfarmTestPeer client = harness.CreatePeer();
+
+        client.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => client.ReceivedCredential is not null, NewfarmTestHarness.WaitTimeout, "the client to be handed the host's room");
+
+        // Pointed at each peer rather than at the directory, from a port of its own on the directory's own address. The
+        // epoch is no secret either: it starts at one and only ever counts up.
+        using NewfarmRawPeer forgerAtHost = new(LocalPortOf(host.Client));
+        using NewfarmRawPeer forgerAtClient = new(LocalPortOf(client.Client));
+
+        forgerAtHost.SendSessionEpoch(NewfarmPacketType.HostingRevoked, identity.SessionId, identity.Epoch);
+        forgerAtClient.SendCredential(NewfarmPacketType.CredentialAvailable, identity.SessionId, identity.Epoch + 1, AdapterTag, "ROOM-FORGED");
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(300));
+
+        // One comparison, so a failure shows what both forgeries did.
+        Assert.Equal((0, NewfarmClientMode.Hosting, credential), (host.RevocationCount, host.Client.Mode, client.ReceivedCredential!.Value.Credential));
+    }
+
+    /// <summary>
     /// The case a heartbeat cannot answer: the host is online and heartbeating, but its game is no longer hosting
     /// anything. The peers are the only ones who know, so their reports have to be able to override a live heartbeat.
     /// </summary>
@@ -1380,6 +1416,18 @@ public sealed class NewfarmDirectoryTests
         host.IsAbandoned = true;
 
         harness.PumpFor(TimeSpan.FromMilliseconds(harness.Server.Config.HostTimeoutMilliseconds + 200));
+    }
+
+    /// <summary>
+    /// Returns the port a client sends from, which an attacker reads off the wire and a test has to ask the socket for.
+    /// </summary>
+    /// <param name="newfarmClient">The client whose port is wanted, which has sent at least once.</param>
+    /// <returns>The port its socket is bound to.</returns>
+    private static int LocalPortOf(NewfarmClient newfarmClient)
+    {
+        Socket socket = (Socket)typeof(NewfarmClient).GetField("_socket", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(newfarmClient)!;
+
+        return ((IPEndPoint)socket.LocalEndPoint!).Port;
     }
 
     /// <summary>

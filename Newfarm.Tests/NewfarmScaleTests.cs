@@ -299,6 +299,23 @@ internal sealed class NewfarmRawPeer : IDisposable
         Send(length);
     }
 
+    /// <summary>
+    /// Sends a message carrying a session id, an epoch and a credential.
+    /// </summary>
+    /// <param name="newfarmPacketType">The message to send.</param>
+    /// <param name="sessionId">The session it concerns.</param>
+    /// <param name="epoch">The epoch it concerns.</param>
+    /// <param name="adapterTag">The service the credential belongs to.</param>
+    /// <param name="credential">Where the message says the session lives.</param>
+    public void SendCredential(NewfarmPacketType newfarmPacketType, ulong sessionId, uint epoch, string adapterTag, string credential)
+    {
+        int length = NewfarmWireFormat.WriteSessionEpoch(_sendBuffer, newfarmPacketType, sessionId, epoch);
+
+        length += NewfarmWireFormat.WriteCredential(new Span<byte>(_sendBuffer, length, _sendBuffer.Length - length), adapterTag, credential);
+
+        Send(length);
+    }
+
     /// <inheritdoc/>
     public void Dispose()
     {
