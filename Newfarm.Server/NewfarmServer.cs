@@ -470,6 +470,13 @@ public sealed class NewfarmServer : IDisposable
 
         NewfarmRequestResult reportResult = _registry.ReportCredentialUnreachable(session!, senderEndPoint, epoch, nowMilliseconds);
 
+        if (reportResult is NewfarmRequestResult.SessionFull)
+        {
+            SendRefused(sessionId, NewfarmRefusalReason.SessionFull, senderEndPoint);
+
+            return;
+        }
+
         if (reportResult is not NewfarmRequestResult.Accepted)
         {
             Log($"Newfarm refused an unreachable report for session [{sessionId:x16}] epoch [{epoch}] from [{senderEndPoint}]: [{reportResult}].");

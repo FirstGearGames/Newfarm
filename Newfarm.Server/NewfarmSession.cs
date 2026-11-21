@@ -153,7 +153,8 @@ internal sealed class NewfarmSession
     /// </summary>
     /// <remarks>
     /// Null between uses rather than emptied, because a healthy hosted session never has any: at scale, an empty
-    /// dictionary held by every session costs more memory than the sessions themselves.
+    /// dictionary held by every session costs more memory than the sessions themselves. Every reporter is queued as it
+    /// reports, so removing a waiter removes its report with it, which bounds this by the waiting set.
     /// </remarks>
     private Dictionary<IPEndPoint, uint>? _unreachableReports;
 
@@ -495,6 +496,14 @@ internal sealed class NewfarmSession
 
             if (_declinedEndPoints.Count == 0)
                 _declinedEndPoints = null;
+        }
+
+        if (_unreachableReports is not null)
+        {
+            _unreachableReports.Remove(waiterEndPoint);
+
+            if (_unreachableReports.Count == 0)
+                _unreachableReports = null;
         }
     }
 

@@ -1415,6 +1415,88 @@ public sealed class NewfarmDirectoryTests
     }
 
     /// <summary>
+    /// A report that the host cannot be reached is held to the same limit on waiters as an ask, so a sender with ports to
+    /// spare cannot queue itself past it.
+    /// </summary>
+    /// <remarks>
+    /// A report queues its sender, and it skipped the limit an ask is held to. Every queued peer is sent a keep-alive a
+    /// second and a copy of every credential published, to wherever the report claimed to come from, so the queue had no
+    /// bound and neither did what the directory could be made to send.
+    /// </remarks>
+    [Fact]
+    public void AnUnreachableReportCannotQueueAPeerPastTheWaiterLimit()
+    {
+        const int MaximumWaitersPerSession = 2;
+
+        using NewfarmTestHarness harness = new(config => config.MaximumWaitersPerSession = MaximumWaitersPerSession);
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        host.Client.PublishCredential(AdapterTag, "ROOM-LIVE");
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(200));
+
+        // A port of its own for every report, which costs the sender nothing.
+        NewfarmRawPeer[] reporters = new NewfarmRawPeer[8];
+
+        for (int i = 0; i < reporters.Length; i++)
+        {
+            reporters[i] = new NewfarmRawPeer(harness.Port, IPAddress.Parse("127.0.0.2"));
+            reporters[i].SendSessionEpoch(NewfarmPacketType.CredentialUnreachable, identity.SessionId, identity.Epoch);
+        }
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(300));
+
+        int queuedReporterCount = 0;
+
+        for (int i = 0; i < reporters.Length; i++)
+        {
+            if (reporters[i].TryReceiveType(NewfarmPacketType.Waiting))
+                queuedReporterCount++;
+
+            reporters[i].Dispose();
+        }
+
+        Assert.True(queuedReporterCount <= MaximumWaitersPerSession, $"[{queuedReporterCount}] reporters were queued against a limit of [{MaximumWaitersPerSession}].");
+    }
+
+    /// <summary>
+    /// A report is held only while the peer that made it is waiting, so the reports a session holds are bounded by its
+    /// waiters, and a peer that has stopped waiting cannot keep the host under challenge.
+    /// </summary>
+    /// <remarks>
+    /// Reports were kept per sender until the next credential was published, whatever became of the sender, so a peer
+    /// that reported and then asked again, which takes it back out of the queue, left a report behind from every port it
+    /// used, and the session's reports grew without bound. The challenge they set off is what shows one was left.
+    /// </remarks>
+    [Fact]
+    public void AnUnreachableReportIsForgottenWithItsReporter()
+    {
+        // A slow sweep, so nothing is decided between a report and the ask that follows it.
+        using NewfarmTestHarness harness = new(config => config.SweepIntervalMilliseconds = 2000);
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        host.Client.PublishCredential(AdapterTag, "ROOM-LIVE");
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(200));
+
+        // Each port reports and then asks, which hands it the live room and takes it out of the queue again.
+        for (int i = 0; i < 8; i++)
+        {
+            using NewfarmRawPeer reporter = new(harness.Port, IPAddress.Parse("127.0.0.2"));
+
+            reporter.SendSessionEpoch(NewfarmPacketType.CredentialUnreachable, identity.SessionId, identity.Epoch);
+            reporter.SendSessionEpoch(NewfarmPacketType.AwaitSession, identity.SessionId, identity.Epoch);
+        }
+
+        // Past the next sweep, which challenges the host if any report is still held.
+        harness.PumpFor(TimeSpan.FromMilliseconds(2500));
+
+        Assert.Equal(0, host.ChallengeCount);
+    }
+
+    /// <summary>
     /// Returns whether every supplied peer has been given a session.
     /// </summary>
     /// <param name="peers">The peers to check.</param>

@@ -29,4 +29,9 @@ public enum NewfarmRequestResult : byte
     /// The peer is not the one newfarm believes is hosting, so it has no standing to give the session up.
     /// </summary>
     NotHosting,
+
+    /// <summary>
+    /// The session already has as many peers waiting on it as it is configured to allow, and the peer is not one of them.
+    /// </summary>
+    SessionFull,
 }

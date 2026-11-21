@@ -111,9 +111,7 @@ internal sealed class NewfarmSessionRegistry
     /// </remarks>
     public NewfarmWaitOutcome AddWaiter(NewfarmSession session, IPEndPoint waiterEndPoint, long nowMilliseconds)
     {
-        // Peers already in the queue are always let through, so a full session still keeps the ones it has informed
-        // and only turns away arrivals it has no room to inform.
-        if (session.WaiterCount >= _config.MaximumWaitersPerSession && !session.HasWaiter(waiterEndPoint))
+        if (IsSessionFull(session, waiterEndPoint))
             return NewfarmWaitOutcome.SessionFull;
 
         session.AddWaiter(waiterEndPoint, nowMilliseconds);
@@ -236,10 +234,17 @@ internal sealed class NewfarmSessionRegistry
     /// <param name="epoch">The epoch the peer believes is current.</param>
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     /// <returns>Why the report was refused, or <see cref="NewfarmRequestResult.Accepted"/>.</returns>
+    /// <remarks>
+    /// Held to the same limit as an ask, since queueing is what a report does as well, and every waiter costs a keep-alive
+    /// a second and a copy of every credential published.
+    /// </remarks>
     public NewfarmRequestResult ReportCredentialUnreachable(NewfarmSession session, IPEndPoint reporterEndPoint, uint epoch, long nowMilliseconds)
     {
         if (epoch != session.Epoch)
             return NewfarmRequestResult.StaleEpoch;
+
+        if (IsSessionFull(session, reporterEndPoint))
+            return NewfarmRequestResult.SessionFull;
 
         session.AddWaiter(reporterEndPoint, nowMilliseconds);
         session.RecordCredentialUnreachable(reporterEndPoint);
@@ -486,6 +491,18 @@ internal sealed class NewfarmSessionRegistry
             notifications.Add(new NewfarmNotification(NewfarmPacketType.Waiting, session.GetWaiterEndPoint(i), session));
         }
     }
+
+    /// <summary>
+    /// Returns whether a session has no room to queue a peer.
+    /// </summary>
+    /// <param name="session">The session the peer would wait on.</param>
+    /// <param name="waiterEndPoint">The peer that would be queued.</param>
+    /// <returns><see langword="true"/> when the session is holding its configured maximum and the peer is not among them.</returns>
+    /// <remarks>
+    /// Peers already in the queue are always let through, so a full session still keeps the ones it has informed and
+    /// only turns away arrivals it has no room to inform.
+    /// </remarks>
+    private bool IsSessionFull(NewfarmSession session, IPEndPoint waiterEndPoint) => session.WaiterCount >= _config.MaximumWaitersPerSession && !session.HasWaiter(waiterEndPoint);
 
     /// <summary>
     /// Forgets a session, and gives its place back to the address that asked for it.
