@@ -316,6 +316,26 @@ internal sealed class NewfarmRawPeer : IDisposable
         Send(length);
     }
 
+    /// <summary>
+    /// Reads every reply already waiting on the socket, without waiting for more.
+    /// </summary>
+    /// <param name="newfarmPacketType">The type being looked for.</param>
+    /// <returns><see langword="true"/> when one of the replies read was of that type.</returns>
+    public bool TryReceiveType(NewfarmPacketType newfarmPacketType)
+    {
+        bool isReceived = false;
+
+        while (_socket.Available > 0)
+        {
+            TryReceive(out NewfarmPacketType receivedNewfarmPacketType, out ulong _, out uint _);
+
+            if (receivedNewfarmPacketType == newfarmPacketType)
+                isReceived = true;
+        }
+
+        return isReceived;
+    }
+
     /// <inheritdoc/>
     public void Dispose()
     {

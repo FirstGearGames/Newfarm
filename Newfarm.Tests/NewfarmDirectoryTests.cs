@@ -959,6 +959,50 @@ public sealed class NewfarmDirectoryTests
     }
 
     /// <summary>
+    /// Saying the host cannot be reached while it is still alive buys no place in the election that follows its loss. A
+    /// peer that arrives once the host is gone is elected ahead of one that only reported it early and kept heartbeating.
+    /// </summary>
+    /// <remarks>
+    /// While the host lives, a peer that merely asks is deliberately not queued, but a report queued its sender anyway.
+    /// A cheater could report once, heartbeat to keep its place, and be elected the moment the host timed out, ahead of
+    /// every peer that waited for the host to actually be gone, and then carry the session on from a world of its own.
+    /// </remarks>
+    [Fact(Skip = "MIGR-4, held for a decision: not queueing a report while the host lives passes this, but strands the reporter whenever a stalled host's heartbeat wins it back, and a peer heartbeating at the rate limit still wins the election. Remove the skip to see it fail.")]
+    public void AReportMadeWhileTheHostLivedBuysNoPlaceInTheElection()
+    {
+        using NewfarmTestHarness harness = new();
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        host.Client.PublishCredential(AdapterTag, "ROOM-LIVE");
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(200));
+
+        NewfarmTestPeer honestClient = harness.CreatePeer();
+
+        using NewfarmRawPeer cheater = new(harness.Port, IPAddress.Parse("127.0.0.2"));
+
+        // The host dies, and in the same moment the cheater claims it cannot be reached, while the directory still has it alive.
+        host.IsAbandoned = true;
+
+        cheater.SendSessionEpoch(NewfarmPacketType.CredentialUnreachable, identity.SessionId, identity.Epoch);
+
+        // One heartbeat keeps the cheater's place past the host timeout, and it says nothing more.
+        harness.PumpFor(TimeSpan.FromMilliseconds(300));
+
+        cheater.SendSessionEpoch(NewfarmPacketType.WaiterHeartbeat, identity.SessionId, identity.Epoch);
+
+        // Past the host timeout, which is when an honest peer finds out its host is gone.
+        harness.PumpFor(TimeSpan.FromMilliseconds(500));
+
+        honestClient.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => honestClient.ElectionCount > 0, NewfarmTestHarness.WaitTimeout, "the honest client to be elected");
+
+        Assert.False(cheater.TryReceiveType(NewfarmPacketType.ElectHost), "The peer that reported a live host was elected the moment it timed out, ahead of the peer that came once it was gone.");
+    }
+
+    /// <summary>
     /// A host that knows it has stopped hosting says so, and the session moves on at once rather than waiting out a
     /// heartbeat that is never going to lapse.
     /// </summary>
