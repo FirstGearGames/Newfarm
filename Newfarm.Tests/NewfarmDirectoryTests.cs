@@ -1121,6 +1121,50 @@ public sealed class NewfarmDirectoryTests
     }
 
     /// <summary>
+    /// Sending from the host's address is not enough to speak for the host. A datagram that only carries the host's
+    /// address and port, with the session id and the epoch every peer holds, cannot move the session to another room.
+    /// </summary>
+    /// <remarks>
+    /// What the host alone may do, publish, surrender, close and heartbeat, is granted on the source endpoint and an epoch
+    /// that starts at one, so a session member on a network that lets it forge source addresses could point everyone
+    /// arriving at a room of its own choosing.
+    /// </remarks>
+    [Fact(Skip = "MIGR-6, held for a decision: closing it needs a host secret issued with the session and carried on every host request, which changes the protocol. Remove the skip to see it fail.")]
+    public void ADatagramFromTheHostsAddressCannotSpeakForTheHost()
+    {
+        // A host timeout far longer than the test, so the directory holds the host throughout.
+        using NewfarmTestHarness harness = new(config => config.HostTimeoutMilliseconds = 30000);
+
+        NewfarmSessionIdentity identity = CreateSession(harness, out NewfarmTestPeer host);
+
+        string credential = "ROOM-REAL";
+
+        host.Client.PublishCredential(AdapterTag, credential);
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(200));
+
+        // Standing in for a forged source address: the host's socket gives its port up so the forger's can send from it.
+        int hostPort = LocalPortOf(host.Client);
+
+        host.IsAbandoned = true;
+        host.Dispose();
+
+        using NewfarmRawPeer forger = new(harness.Port, IPAddress.Loopback, hostPort);
+
+        forger.SendCredential(NewfarmPacketType.PublishCredential, identity.SessionId, identity.Epoch, AdapterTag, "ROOM-FORGED");
+
+        harness.PumpFor(TimeSpan.FromMilliseconds(200));
+
+        NewfarmTestPeer lateClient = harness.CreatePeer();
+
+        lateClient.Client.AwaitSession(identity);
+
+        harness.PumpUntil(() => lateClient.ReceivedCredential is not null, NewfarmTestHarness.WaitTimeout, "a late client to be told where the session lives");
+
+        Assert.Equal(credential, lateClient.ReceivedCredential!.Value.Credential);
+    }
+
+    /// <summary>
     /// A peer that has said it cannot host is passed over when the next election runs, rather than being handed the
     /// same job again and again.
     /// </summary>

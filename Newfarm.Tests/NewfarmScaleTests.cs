@@ -226,12 +226,13 @@ internal sealed class NewfarmRawPeer : IDisposable
     /// </summary>
     /// <param name="serverPort">The port the directory is bound to.</param>
     /// <param name="localAddress">The loopback address to send from, which stands in for another machine, or <see langword="null"/> for the usual one.</param>
-    public NewfarmRawPeer(int serverPort, IPAddress? localAddress = null)
+    /// <param name="localPort">The port to send from, or zero for any free one.</param>
+    public NewfarmRawPeer(int serverPort, IPAddress? localAddress = null, int localPort = 0)
     {
         _serverEndPoint = new IPEndPoint(IPAddress.Loopback, serverPort);
 
         _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-        _socket.Bind(new IPEndPoint(localAddress ?? IPAddress.Loopback, 0));
+        _socket.Bind(new IPEndPoint(localAddress ?? IPAddress.Loopback, localPort));
         _socket.ReceiveTimeout = 5000;
 
         // Deep enough that a burst of replies is not dropped by the socket while this peer is still sending.
