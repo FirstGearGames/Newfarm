@@ -142,6 +142,13 @@ internal static class Program
                     config.MaximumConcurrentSessions = (int)maximumConcurrentSessions;
                     break;
 
+                case "--max-sessions-per-address":
+                    if (!TryReadUInt32(args, ref i, out uint maximumSessionsPerAddress))
+                        return false;
+
+                    config.MaximumSessionsPerAddress = (int)maximumSessionsPerAddress;
+                    break;
+
                 case "--max-waiters":
                     if (!TryReadUInt32(args, ref i, out uint maximumWaitersPerSession))
                         return false;
@@ -267,6 +274,7 @@ internal static class Program
         Console.WriteLine("Limits. Raise these for a deployment serving many players behind one address,");
         Console.WriteLine("such as a school, an office, or a carrier-grade NAT.");
         Console.WriteLine($"  --max-sessions <uint>               Concurrent session cap; 0 = unlimited (default: {defaults.MaximumConcurrentSessions})");
+        Console.WriteLine($"  --max-sessions-per-address <uint>   Sessions one address may hold; 0 = unlimited (default: {defaults.MaximumSessionsPerAddress})");
         Console.WriteLine($"  --max-waiters <uint>                Peers that may wait on one session (default: {defaults.MaximumWaitersPerSession})");
         Console.WriteLine($"  --peer-rate <uint>                  Requests a second from one peer (default: {defaults.MaximumRequestsPerSecondPerPeer})");
         Console.WriteLine($"  --peer-burst <uint>                 Requests at once from one peer (default: {defaults.RequestBurstPerPeer})");

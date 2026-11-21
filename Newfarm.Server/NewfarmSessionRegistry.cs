@@ -24,6 +24,12 @@ internal sealed class NewfarmSessionRegistry
     private readonly Dictionary<ulong, NewfarmSession> _sessionsById = [];
 
     /// <summary>
+    /// How many sessions each address holds, counted against <see cref="NewfarmSession.CreatorAddress"/>, so no one
+    /// address can fill the directory. An address holding none has no entry, which bounds this by the sessions held.
+    /// </summary>
+    private readonly Dictionary<IPAddress, int> _sessionCountsByAddress = [];
+
+    /// <summary>
     /// The configuration the timings and caps are read from.
     /// </summary>
     private readonly NewfarmServerConfig _config;
@@ -48,10 +54,19 @@ internal sealed class NewfarmSessionRegistry
     /// <param name="hostEndPoint">The peer asking for the session.</param>
     /// <param name="nowMilliseconds">The current <see cref="NewfarmClock.Milliseconds"/> reading.</param>
     /// <param name="session">When this returns <see langword="true"/>, the session that was opened.</param>
-    /// <returns><see langword="true"/> unless newfarm is already holding its configured maximum.</returns>
+    /// <returns><see langword="true"/> unless newfarm, or the address asking, is already holding its configured maximum.</returns>
     public bool TryCreateSession(IPEndPoint hostEndPoint, long nowMilliseconds, out NewfarmSession? session)
     {
         if (_config.MaximumConcurrentSessions is not NewfarmServerConfig.UnlimitedConcurrentSessions && _sessionsById.Count >= _config.MaximumConcurrentSessions)
+        {
+            session = null;
+
+            return false;
+        }
+
+        _sessionCountsByAddress.TryGetValue(hostEndPoint.Address, out int addressSessionCount);
+
+        if (_config.MaximumSessionsPerAddress is not NewfarmServerConfig.UnlimitedSessionsPerAddress && addressSessionCount >= _config.MaximumSessionsPerAddress)
         {
             session = null;
 
@@ -63,6 +78,7 @@ internal sealed class NewfarmSessionRegistry
         session = new NewfarmSession(sessionId, hostEndPoint, nowMilliseconds);
 
         _sessionsById.Add(sessionId, session);
+        _sessionCountsByAddress[hostEndPoint.Address] = addressSessionCount + 1;
 
         return true;
     }
@@ -252,7 +268,7 @@ internal sealed class NewfarmSessionRegistry
         if (session.HostEndPoint is null || !session.HostEndPoint.Equals(hostEndPoint))
             return NewfarmRequestResult.NotHosting;
 
-        _sessionsById.Remove(session.SessionId);
+        RemoveSession(session);
 
         return NewfarmRequestResult.Accepted;
     }
@@ -266,7 +282,7 @@ internal sealed class NewfarmSessionRegistry
     /// <param name="notifications">Receives everything that should be sent as a result of this sweep.</param>
     public void Sweep(long nowMilliseconds, List<NewfarmNotification> notifications)
     {
-        List<ulong>? expiredSessionIds = null;
+        List<NewfarmSession>? expiredSessions = null;
 
         foreach (KeyValuePair<ulong, NewfarmSession> entry in _sessionsById)
         {
@@ -292,15 +308,15 @@ internal sealed class NewfarmSessionRegistry
             if (!session.IsExpired(nowMilliseconds, _config.CredentialGraceMilliseconds, _config.HostlessGraceMilliseconds))
                 continue;
 
-            expiredSessionIds ??= [];
-            expiredSessionIds.Add(entry.Key);
+            expiredSessions ??= [];
+            expiredSessions.Add(session);
         }
 
-        if (expiredSessionIds is null)
+        if (expiredSessions is null)
             return;
 
-        for (int i = 0; i < expiredSessionIds.Count; i++)
-            _sessionsById.Remove(expiredSessionIds[i]);
+        for (int i = 0; i < expiredSessions.Count; i++)
+            RemoveSession(expiredSessions[i]);
     }
 
     /// <summary>
@@ -469,6 +485,23 @@ internal sealed class NewfarmSessionRegistry
 
             notifications.Add(new NewfarmNotification(NewfarmPacketType.Waiting, session.GetWaiterEndPoint(i), session));
         }
+    }
+
+    /// <summary>
+    /// Forgets a session, and gives its place back to the address that asked for it.
+    /// </summary>
+    /// <param name="session">The session to forget.</param>
+    private void RemoveSession(NewfarmSession session)
+    {
+        _sessionsById.Remove(session.SessionId);
+
+        IPAddress creatorAddress = session.CreatorAddress;
+        int addressSessionCount = _sessionCountsByAddress[creatorAddress] - 1;
+
+        if (addressSessionCount == 0)
+            _sessionCountsByAddress.Remove(creatorAddress);
+        else
+            _sessionCountsByAddress[creatorAddress] = addressSessionCount;
     }
 
     /// <summary>

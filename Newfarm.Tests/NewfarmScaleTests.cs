@@ -154,8 +154,9 @@ public sealed class NewfarmScaleTests
         config.SweepIntervalMilliseconds = 250;
 
         // The point of a scale run is to find where the loop gives out, which cannot be measured through a cap that
-        // stops it first.
+        // stops it first. Every session here comes from one address, so that address's own cap goes too.
         config.MaximumConcurrentSessions = NewfarmServerConfig.UnlimitedConcurrentSessions;
+        config.MaximumSessionsPerAddress = NewfarmServerConfig.UnlimitedSessionsPerAddress;
 
         // One socket here is standing in for one player each, so the per-peer and per-address limits are the wrong shape
         // for it. They are measured for what they are in the ordinary suite.
@@ -224,12 +225,13 @@ internal sealed class NewfarmRawPeer : IDisposable
     /// Creates a peer pointed at a directory.
     /// </summary>
     /// <param name="serverPort">The port the directory is bound to.</param>
-    public NewfarmRawPeer(int serverPort)
+    /// <param name="localAddress">The loopback address to send from, which stands in for another machine, or <see langword="null"/> for the usual one.</param>
+    public NewfarmRawPeer(int serverPort, IPAddress? localAddress = null)
     {
         _serverEndPoint = new IPEndPoint(IPAddress.Loopback, serverPort);
 
         _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-        _socket.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        _socket.Bind(new IPEndPoint(localAddress ?? IPAddress.Loopback, 0));
         _socket.ReceiveTimeout = 5000;
 
         // Deep enough that a burst of replies is not dropped by the socket while this peer is still sending.

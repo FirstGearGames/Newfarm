@@ -56,7 +56,7 @@ dotnet run --project Newfarm.Host -- --port 47778
 `--help` lists every option: timings, the challenge settings, and the abuse limits. The limits worth knowing about before a real deployment:
 
 - `--hostless-grace-ms` must outlast the slowest client's own discovery that the host has gone. That discovery comes from the relay, not from newfarm, and a relay can take tens of seconds. A client arriving after the session was forgotten cannot be told anything at all.
-- `--address-rate` and `--address-burst` are deliberately loose, because an address is not a peer. A school, an office, or a carrier-grade NAT puts hundreds of unrelated players behind one. Raise them rather than let them turn real players away.
+- `--address-rate`, `--address-burst` and `--max-sessions-per-address` are deliberately loose, because an address is not a peer. A school, an office, or a carrier-grade NAT puts hundreds of unrelated players behind one. Raise them rather than let them turn real players away.
 
 ## Things worth knowing
 

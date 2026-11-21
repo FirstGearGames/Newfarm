@@ -1193,6 +1193,44 @@ public sealed class NewfarmDirectoryTests
     }
 
     /// <summary>
+    /// One machine asking for session after session cannot take every place the directory has, so a host anywhere else is
+    /// still given one.
+    /// </summary>
+    /// <remarks>
+    /// Opening a session costs a single datagram, and a session nobody heartbeats is held for the hostless grace, so one
+    /// address asking over and over filled the directory, held it full, and every other host was told it was at capacity.
+    /// </remarks>
+    [Fact]
+    public void OneAddressCannotTakeEveryPlaceTheDirectoryHas()
+    {
+        // Room for more sessions than one address may hold, so the places left over are the ones it could not take.
+        const int MaximumConcurrentSessions = 1100;
+
+        using NewfarmTestHarness harness = new(config => config.MaximumConcurrentSessions = MaximumConcurrentSessions);
+
+        IPAddress attackerAddress = IPAddress.Parse("127.0.0.2");
+        int attackerSessionCount = 0;
+
+        // A fresh port every few requests, as an attacker would, so no one peer's allowance is what stops it.
+        for (int i = 0; i < 20; i++)
+        {
+            using NewfarmRawPeer attacker = new(harness.Port, attackerAddress);
+
+            attackerSessionCount += attacker.CreateSessions(sessionCount: 60).Count;
+        }
+
+        NewfarmTestPeer host = harness.CreatePeer();
+
+        host.Client.CreateSession();
+
+        harness.PumpUntil(() => host.CreatedIdentity is not null || host.Refusals.Count > 0, NewfarmTestHarness.WaitTimeout, "the host at another address to be answered");
+
+        Assert.Empty(host.Refusals);
+        Assert.NotNull(host.CreatedIdentity);
+        Assert.True(attackerSessionCount < MaximumConcurrentSessions, $"One address was given [{attackerSessionCount}] sessions, every place the directory had.");
+    }
+
+    /// <summary>
     /// One peer going as hard as a real one ever legitimately goes, for long enough to spend a burst allowance
     /// several times over, is never throttled.
     /// </summary>

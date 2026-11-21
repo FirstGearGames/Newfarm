@@ -108,6 +108,19 @@ public sealed class NewfarmServerConfig
     public int MaximumConcurrentSessions = 65536;
 
     /// <summary>
+    /// The most sessions one address may hold at once, each counted against the address that asked for it until newfarm
+    /// forgets the session.
+    /// <see cref="UnlimitedSessionsPerAddress"/> removes the cap.
+    /// </summary>
+    /// <remarks>
+    /// Asking for a session costs one datagram, and a session nobody heartbeats is held for the hostless grace, so without
+    /// this one machine asking over and over could fill the directory and hold it full. Deliberately loose, for the same
+    /// reason as <see cref="MaximumRequestsPerSecondPerAddress"/>: a school, an office or a carrier-grade NAT puts many
+    /// hosts behind one address, and this sits well above the several hundred players that rate is sized for.
+    /// </remarks>
+    public int MaximumSessionsPerAddress = 1024;
+
+    /// <summary>
     /// The most peers that may be waiting on one session.
     /// </summary>
     /// <remarks>
@@ -173,4 +186,10 @@ public sealed class NewfarmServerConfig
     /// Sentinel value: pass as <see cref="MaximumConcurrentSessions"/> to hold as many sessions as memory allows.
     /// </summary>
     public const int UnlimitedConcurrentSessions = 0;
+
+    /// <summary>
+    /// Sentinel value: pass as <see cref="MaximumSessionsPerAddress"/> to let one address hold as many sessions as the
+    /// directory does.
+    /// </summary>
+    public const int UnlimitedSessionsPerAddress = 0;
 }

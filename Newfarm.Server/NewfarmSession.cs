@@ -18,6 +18,12 @@ internal sealed class NewfarmSession
     public ulong SessionId { get; }
 
     /// <summary>
+    /// The address of the peer that asked for the session, which the session is counted against for as long as newfarm
+    /// holds it, whoever hosts it since.
+    /// </summary>
+    public IPAddress CreatorAddress { get; }
+
+    /// <summary>
     /// Increments on every handover, so a peer can tell a newer credential from the one it holds and a returning old
     /// host cannot publish over the live one.
     /// </summary>
@@ -192,6 +198,7 @@ internal sealed class NewfarmSession
     public NewfarmSession(ulong sessionId, IPEndPoint hostEndPoint, long nowMilliseconds)
     {
         SessionId = sessionId;
+        CreatorAddress = hostEndPoint.Address;
         Epoch = 1;
         HostEndPoint = hostEndPoint;
         LastHostHeartbeatMilliseconds = nowMilliseconds;
